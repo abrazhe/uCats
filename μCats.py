@@ -80,7 +80,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
 
 def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                                    dbscan_eps=0.05, dbscan_minpts=3, cluster_minsize=5,
-                                   walpha=1.0,
+                                   walpha=0.5,
                                    mask_of_interest=None):
     """
     Convert a TXY image stack to a list of signals taken from spatial windows and aggregated according to their coherence
@@ -88,7 +88,6 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
     sh = data.shape
     if mask_of_interest is None:
         mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    out = np.zeros(sh,dtype=_dtype_)
     mask = mask_of_interest
     counts = np.zeros(sh[1:])
     acc = []
@@ -111,13 +110,14 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                 _,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts)
                 similar = affs==affs[kcenter]
                 dists = cluster.metrics.euclidean(points[kcenter],points)
-                if sum(similar) < cluster_minsize:
+                if sum(similar) < cluster_minsize or affs[kcenter]==-1:
                     knn_count +=1
                     th = np.argsort(dists)[cluster_minsize+1]
                     similar = dists <= th
                 else:
                     cluster_count +=1
                 weights = np.exp(-walpha*dists)
+                #weights /= np.sum(weights)
                 #weights = ones(len(dists))
                 weights[~similar] = 0
                 #weights /= np.sum(weights)
@@ -127,6 +127,79 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                 acc.append((vx, sl, weights))
     return acc
 
+
+from scipy import stats
+def signals_from_array_correlation(data,stride=2,nhood=5,
+                                   corrfn = stats.pearsonr,
+                                   mask_of_interest=None):
+    """
+    Convert a TXY image stack to a list of signals taken from spatial windows and aggregated according to their coherence
+    """
+    sh = data.shape
+    L = sh[0]
+    if mask_of_interest is None:
+        mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    mask = mask_of_interest
+    counts = np.zeros(sh[1:])
+    acc = []
+    knn_count = 0
+    cluster_count = 0
+    Ln = (2*nhood+1)**2
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                v = data[:,r,c]
+                kcenter = 2*nhood*(nhood+1)
+                sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+                patch = data[(slice(None),)+sl]
+                patch = patch.reshape(sh[0],-1).T
+                #weights = corrfn(patch,axis=1).correlation[kcenter]
+                weights = np.array([corrfn(a,v)[0] for a in patch])
+                weights[weights < 2/L**0.5] = 0 # set weights to 0 in statistically independent sources
+                #weights[np.argsort(weights)[:-10]]=0
+                weights = weights/np.sum(weights) # normalize weights
+                vx = (patch*weights.reshape(-1,1)).sum(0)
+                #vx = patch[similar].mean(0) # DONE?: weighted aggregate
+                #                            # TODO: check how weights are defined in NL-Bayes and BM3D
+                # TODO: project to PCs?
+                acc.append((vx, sl, weights))
+    return acc
+
+def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
+    sh = data.shape
+    if mask_of_interest is None:
+        mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,dtype=_dtype_)
+    mask = mask_of_interest
+    counts = np.zeros(sh[1:])
+    acc = []
+    knn_count = 0
+    cluster_count = 0
+    Ln = (2*nhood+1)**2
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                v = data[:,r,c]
+                kcenter = 2*nhood*(nhood+1)
+                sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+                patch = data[(slice(None),)+sl]
+                w_sh = patch.shape
+                patch = patch.reshape(sh[0],-1).T
+                weights = np.array([corrfn(a,v)[0] for a in patch])
+                ks = np.argsort(weights)[::-1]
+                xs = ndimage.median_filter(patch, size=(15,1))
+                out[(slice(None),)+sl] += xs[np.argsort(ks)].T.reshape(w_sh)
+                counts[sl] += 1
+    out /= counts
+    
+    return out
+    
+
+def loc_in_patch(loc,patch):
+    sl = patch[1]
+    return np.all([s.start <= l < s.stop for l,s in zip(loc, sl)])
 
 def _baseline_windowed_pca(data,stride=4, nhood=7, ncomp=10,
                           smooth = 60,
@@ -303,7 +376,7 @@ def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
 
 
 from multiprocessing import Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline,njobs=4):
+def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
     """
     Process temporal signals some pipeline function and return processed signals
     (parallel version)
@@ -549,7 +622,9 @@ def sp_rec_with_labels(vec, labels,
                        min_size=5,
                        niters=10,
                        kgain=0.25,
-                       smoother=smoothed_medianf):
+                       smoother=smoothed_medianf,
+                       wmedian=3,
+                       return_smoothed=False):
     if min_size > 1:
         regions = bwmorph.contiguous_regions(labels)
         regions = bwmorph.filter_size_regions(regions, min_size)
@@ -560,12 +635,15 @@ def sp_rec_with_labels(vec, labels,
     if not sum(filtered_labels):
         return np.zeros_like(vec)
     vec1 = np.copy(vec)
-    vs = smoother(vec1, min_scale, 5)
+
+    
+    
+    vs = smoother(vec1, min_scale, wmedian)
     weights = np.clip(labels, 0,1)
     
     #vss = smoother(vec-vs,max_scale,weights=weights<0.9)
 
-    vrec = smoother(vs*(vec1>0),min_scale,5)
+    vrec = smoother(vs*(vec1>0),min_scale,wmedian)
     
     for i in range(niters):
         vec1 = vec1 - kgain*(vec1-vrec)
@@ -594,7 +672,11 @@ def sp_rec_with_labels(vec, labels,
         ax.plot(vrec, color='royalblue',lw=2)
         ll = np.where(labels)[0]
         ax.plot(ll,-1*np.ones_like(ll),'r|')
-    return vrec
+    if return_smoothed:
+        return vrec
+    else:
+        return weights*(vec>0)*vec
+        
 
 
 def quantify_events(rec, labeled,dt=1):
