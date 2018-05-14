@@ -79,8 +79,9 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
 
 
 def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
+                                   pre_smooth=5,
                                    dbscan_eps=0.05, dbscan_minpts=3, cluster_minsize=5,
-                                   walpha=0.5,
+                                   walpha=10,
                                    mask_of_interest=None):
     """
     Convert a TXY image stack to a list of signals taken from spatial windows and aggregated according to their coherence
@@ -94,6 +95,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
     knn_count = 0
     cluster_count = 0
     Ln = (2*nhood+1)**2
+    corrfn=stats.pearsonr
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\rprocessing location %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
@@ -102,7 +104,9 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                 kcenter = 2*nhood*(nhood+1)
                 sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
                 patch = data[(slice(None),)+sl]
-                patch = patch.reshape(sh[0],-1).T               
+                patch = patch.reshape(sh[0],-1).T
+                if pre_smooth > 1:
+                    patch = ndimage.median_filter(patch, size=(pre_smooth,1))
                 Xc = patch.mean(0)
                 #Xc =  0
                 u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
@@ -117,9 +121,13 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                 else:
                     cluster_count +=1
                 weights = np.exp(-walpha*dists)
+                #weights = np.array([corrfn(a,v)[0] for a in patch])**2
+
                 #weights /= np.sum(weights)
                 #weights = ones(len(dists))
                 weights[~similar] = 0
+                #weights = np.array([corrfn(a,v)[0] for a in patch])
+
                 #weights /= np.sum(weights)
                 vx = patch[similar].mean(0) # DONE?: weighted aggregate
                                             # TODO: check how weights are defined in NL-Bayes and BM3D
@@ -130,6 +138,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
 
 from scipy import stats
 def signals_from_array_correlation(data,stride=2,nhood=5,
+                                   max_take=10,
                                    corrfn = stats.pearsonr,
                                    mask_of_interest=None):
     """
@@ -145,26 +154,75 @@ def signals_from_array_correlation(data,stride=2,nhood=5,
     knn_count = 0
     cluster_count = 0
     Ln = (2*nhood+1)**2
+    def _process_loc(r,c):
+        v = data[:,r,c]
+        kcenter = 2*nhood*(nhood+1)
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        patch = data[(slice(None),)+sl]
+        patch = patch.reshape(sh[0],-1).T
+        #weights = corrfn(patch,axis=1).correlation[kcenter]
+        weights = np.array([corrfn(a,v)[0] for a in patch])
+        weights[weights < 2/L**0.5] = 0 # set weights to 0 in statistically independent sources
+        weights[np.argsort(weights)[:-max_take]]=0
+        weights = weights/np.sum(weights) # normalize weights
+        vx = (patch*weights.reshape(-1,1)).sum(0)
+        #vx = patch[similar].mean(0) # DONE?: weighted aggregate
+        #                            # TODO: check how weights are defined in NL-Bayes and BM3D
+        # TODO: project to PCs?
+        acc.append((vx, sl, weights))
+        
+        
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
-            sys.stderr.write('\rprocessing location %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
-                v = data[:,r,c]
-                kcenter = 2*nhood*(nhood+1)
-                sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
-                patch = data[(slice(None),)+sl]
-                patch = patch.reshape(sh[0],-1).T
-                #weights = corrfn(patch,axis=1).correlation[kcenter]
-                weights = np.array([corrfn(a,v)[0] for a in patch])
-                weights[weights < 2/L**0.5] = 0 # set weights to 0 in statistically independent sources
-                #weights[np.argsort(weights)[:-10]]=0
-                weights = weights/np.sum(weights) # normalize weights
-                vx = (patch*weights.reshape(-1,1)).sum(0)
-                #vx = patch[similar].mean(0) # DONE?: weighted aggregate
-                #                            # TODO: check how weights are defined in NL-Bayes and BM3D
-                # TODO: project to PCs?
-                acc.append((vx, sl, weights))
+                _process_loc(r,c)
+    for _,sl,w in acc:
+        counts[sl] += w.reshape(2*nhood+1,2*nhood+1)
+    for r in range(nhood,sh[1]-nhood):
+        for c in range(nhood,sh[2]-nhood):
+            if mask[r,c] and not counts[r,c]:
+                sys.stderr.write('\r (2x) processing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))                
+                _process_loc(r,c)
     return acc
+
+from imfun import components
+def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
+    sh = data.shape
+    L = sh[0]
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,np.float32)
+    counts = np.zeros(sh[1:],int)
+    mask=np.ones(counts.shape,bool)
+    Ln = (2*nhood+1)**2
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+        patch = data[tsl]
+        w_sh = patch.shape
+        patch = patch.reshape(sh[0],-1).T
+        Xc = patch.mean(0)
+        Xc = ndimage.median_filter(Xc,3)
+        u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
+        #ux = ndimage.median_filter(u[:,:npc],size=(3,1))
+        ux = u[:,:npc]
+        proj = ux@np.diag(s[:npc])@vh[:npc]
+        out[tsl] += (proj+Xc).T.reshape(w_sh)
+        counts[sl] += 1
+        
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/counts[None,:,:]
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] ==0:
+                out[:,r,c] = 0
+    return out
+
 
 def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
     sh = data.shape
@@ -187,11 +245,13 @@ def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of
                 patch = data[(slice(None),)+sl]
                 w_sh = patch.shape
                 patch = patch.reshape(sh[0],-1).T
-                weights = np.array([corrfn(a,v)[0] for a in patch])
+                weights = np.array([corrfn(a,v)[0] for a in patch])**2
+                weights = weights/np.sum(weights)
+                wx = weights.reshape(w_sh[1:])
                 ks = np.argsort(weights)[::-1]
-                xs = ndimage.median_filter(patch, size=(15,1))
-                out[(slice(None),)+sl] += xs[np.argsort(ks)].T.reshape(w_sh)
-                counts[sl] += 1
+                xs = ndimage.median_filter(patch, size=(5,1))
+                out[(slice(None),)+sl] += xs[np.argsort(ks)].T.reshape(w_sh)*wx[None,:,:]
+                counts[sl] += wx
     out /= counts
     
     return out
@@ -283,6 +343,22 @@ def simple_pipeline_(y,tau_label=1.5):
     vn = y/ns
     labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
     return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+
+def simple_pipeline_nojitter_(y,tau_label=1.5):
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    ns = rolling_sd_pd(y)
+    low = y < 2.5*np.median(y)
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    if bias > 0:
+        y = y-bias    
+    vn = y/ns
+    labels = simple_label(vn, tau=tau_label,with_plots=False)
+    return y * labels
+    #return sp_rec_with_labels(vn, labels,niters=5,with_plots=False)*ns
 
 
 def simple_pipeline_with_baseline(y,tau_label=1.5):
@@ -737,6 +813,17 @@ def pca_flip_signs(pcf,medianw=None):
         pcf.coords[:,i] *= sg
         pcf.tsvd.components_[:,i]*=sg
     return pcf
+
+def svd_flip_signs(u,vh,medianw=None):
+    L = len(u)
+    if medianw is None:
+        medianw = L//5
+    for i,c in enumerate(u.T):
+        sk = skew(c-ndimage.median_filter(c,medianw))
+        sg = np.sign(sk)
+        u[:,i] *= sg
+        vh[i]*=sg
+    return u,vh
 
 
 def calculate_baseline(frames,pipeline=simple_get_baselines, stride=2,patch_size=5,return_type='array'):
