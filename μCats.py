@@ -79,7 +79,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
 
 
 def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
-                                   pre_smooth=5,
+                                   pre_smooth=3,
                                    dbscan_eps=0.05, dbscan_minpts=3, cluster_minsize=5,
                                    walpha=10,
                                    mask_of_interest=None):
@@ -96,14 +96,19 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
     cluster_count = 0
     Ln = (2*nhood+1)**2
     corrfn=stats.pearsonr
+    patch_size = (nhood*2+1)**2
+    if cluster_minsize > patch_size:
+        cluster_minsize = patch_size
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
-            sys.stderr.write('\rprocessing location %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
+            sys.stderr.write('\r processing location %05d/%d '%(r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
                 v = data[:,r,c]
                 kcenter = 2*nhood*(nhood+1)
                 sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
                 patch = data[(slice(None),)+sl]
+                if not np.any(patch):
+                    continue
                 patch = patch.reshape(sh[0],-1).T
                 if pre_smooth > 1:
                     patch = ndimage.median_filter(patch, size=(pre_smooth,1))
@@ -131,7 +136,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
                 #weights /= np.sum(weights)
                 vx = patch[similar].mean(0) # DONE?: weighted aggregate
                                             # TODO: check how weights are defined in NL-Bayes and BM3D
-                # TODO: project to PCs?
+                                            # TODO: project to PCs?
                 acc.append((vx, sl, weights))
     return acc
 
@@ -154,21 +159,21 @@ def signals_from_array_correlation(data,stride=2,nhood=5,
     knn_count = 0
     cluster_count = 0
     Ln = (2*nhood+1)**2
+    max_take = min(max_take, Ln)
     def _process_loc(r,c):
         v = data[:,r,c]
         kcenter = 2*nhood*(nhood+1)
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
         patch = data[(slice(None),)+sl]
+        if not np.any(patch):
+            return
         patch = patch.reshape(sh[0],-1).T
-        #weights = corrfn(patch,axis=1).correlation[kcenter]
         weights = np.array([corrfn(a,v)[0] for a in patch])
         weights[weights < 2/L**0.5] = 0 # set weights to 0 in statistically independent sources
         weights[np.argsort(weights)[:-max_take]]=0
         weights = weights/np.sum(weights) # normalize weights
+        weights += 1e-6 # add small weight to avoid dividing by zero
         vx = (patch*weights.reshape(-1,1)).sum(0)
-        #vx = patch[similar].mean(0) # DONE?: weighted aggregate
-        #                            # TODO: check how weights are defined in NL-Bayes and BM3D
-        # TODO: project to PCs?
         acc.append((vx, sl, weights))
         
         
@@ -210,6 +215,50 @@ def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
         proj = ux@np.diag(s[:npc])@vh[:npc]
         out[tsl] += (proj+Xc).T.reshape(w_sh)
         counts[sl] += 1
+        
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/counts[None,:,:]
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] ==0:
+                out[:,r,c] = 0
+    return out
+
+def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
+                       temporal_filter=3,
+                       spatial_filter=3,):
+    sh = data.shape
+    L = sh[0]
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,np.float32)
+    counts = np.zeros(sh[1:],np.float32)
+    mask=np.ones(counts.shape,bool)
+    Ln = (2*nhood+1)**2
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+        patch = data[tsl]
+        w_sh = patch.shape
+        patch = patch.reshape(sh[0],-1)
+        # (patch is now Nframes x Npixels, u will hold temporal components)
+        u,s,vh = np.linalg.svd(patch,full_matrices=False)
+        ux = ndimage.median_filter(u[:,:npc],size=(temporal_filter,1))
+        vhx = np.array([ndimage.median_filter(f.reshape(w_sh[1:]),
+                                              size=(spatial_filter,spatial_filter))
+                        for f in vh[:npc]])
+        vhx = vhx.reshape(npc,len(vh[0]))
+        #print('\n', patch.shape, u.shape, vh.shape)
+        #ux = u[:,:npc]
+        proj = ux@np.diag(s[:npc])@vh[:npc]
+        score = np.sum(s[:npc]**2)/np.sum(s**2)
+        #score = 1
+        out[tsl] += score*proj.reshape(w_sh)
+        counts[sl] += score
         
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
@@ -329,48 +378,8 @@ min_px_size_ = 10
 #     labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
 #     return sp_rec_with_labels(y, labels,with_plots=False,)
 
-def simple_pipeline_(y,tau_label=1.5):
-    """
-    Detect and reconstruct Ca-transients in 1D signal
-    """
-    ns = rolling_sd_pd(y)
-    low = y < 2.5*np.median(y)
-    if not any(low):
-        low = np.ones(len(y),np.bool)
-    bias = np.median(y[low])
-    if bias > 0:
-        y = y-bias    
-    vn = y/ns
-    labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
-    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+tau_label_=2.0
 
-def simple_pipeline_nojitter_(y,tau_label=1.5):
-    """
-    Detect and reconstruct Ca-transients in 1D signal
-    """
-    ns = rolling_sd_pd(y)
-    low = y < 2.5*np.median(y)
-    if not any(low):
-        low = np.ones(len(y),np.bool)
-    bias = np.median(y[low])
-    if bias > 0:
-        y = y-bias    
-    vn = y/ns
-    labels = simple_label(vn, tau=tau_label,with_plots=False)
-    return y * labels
-    #return sp_rec_with_labels(vn, labels,niters=5,with_plots=False)*ns
-
-
-def simple_pipeline_with_baseline(y,tau_label=1.5):
-    """
-    Detect and reconstruct Ca-transients in 1D signal after normalizing to baseline
-    """    
-    b,ns,_ = tmvm_baseline(y)
-    b = b + np.median(y-b)
-    vn = (y-b)/ns
-    labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
-    rec = sp_rec_with_labels(y, labels,with_plots=False,)
-    return where(b>0,rec,0)
 
 def process_tmvm(v, k=3,level=7, start_scale=1, tau_smooth=1.5,rec_variant=2,nonnegative=True):
     """
@@ -450,19 +459,6 @@ def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
 
-
-from multiprocessing import Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
-    """
-    Process temporal signals some pipeline function and return processed signals
-    (parallel version)
-    """
-    out =[]
-    pool = Pool(njobs)
-    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
-    pool.close()
-    pool.join()    
-    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
 from scipy.stats import skew
@@ -563,7 +559,7 @@ def baseline_als_spl(y, k=0.5, tau=11, smooth=25., p=0.001, niter=100,eps=1e-4,
         if rsd_smoother is None:
             #rsd_smoother = lambda v_: l2spline(v_, 5)
             rsd_smoother = lambda v_: ndimage.median_filter(y,7)
-        rsd = rolling_sd(y-rsd_smoother(y), input_is_details=True)
+        rsd = rolling_sd_pd(y-rsd_smoother(y), input_is_details=True)
     else:
         rsd = np.pad(rsd, npad,"reflect")
     
@@ -617,7 +613,7 @@ def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
     tv = np.arange(len(v))*dt
     ax.plot(tv,v,'gray')
     b = baseline_fn(v,**kwargs)
-    rsd = rolling_sd(v-smoother(v))
+    rsd = rolling_sd_pd(v-smoother(v))
     ax.fill_between(tv, b-rsd,b+rsd, color='y',alpha=0.75)
     ax.fill_between(tv, b-2.0*rsd,b+2.0*rsd, color='y',alpha=0.5)
     ax.plot(tv,smoother(v),'k')
@@ -630,6 +626,13 @@ def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
 def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
     return vs >= threshold
+
+def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
+    mu = min(np.median(v),0)
+    low = np.percentile(v[v<mu], percentile_low)
+    vs = smoother(v, tau)
+    return vs >= -low
+    
 
 def with_local_jittering(labeler, niters=100, weight_thresh=0.85):
     def _(v, *args, **kwargs):
@@ -646,6 +649,7 @@ def with_local_jittering(labeler, niters=100, weight_thresh=0.85):
     return _
 
 simple_label_lj = with_local_jittering(simple_label)
+percentile_label_lj = with_local_jittering(percentile_label)
 
 thresholds_l1 = np.array([2.26212451,  1.11505896,  0.52321721,  0.51701626,  0.42481402,
                           0.34870014,  0.29144794,  0.24410656,  0.20409004,  0.16792375,
@@ -687,6 +691,7 @@ multiscale_labeler_joint = make_labeler_commitee(multiscale_labeler_l1,
                                                  partial(multiscale_labeler_l2, start=2,thresh=3),
                                                  simple_label_lj)
 
+
 # Reconstruction
 
 from imfun import bwmorph
@@ -695,7 +700,7 @@ from imfun import bwmorph
 def sp_rec_with_labels(vec, labels, 
                        min_scale=1.0,max_scale=50.,
                        with_plots=True,
-                       min_size=5,
+                       min_size=3,
                        niters=10,
                        kgain=0.25,
                        smoother=smoothed_medianf,
@@ -753,6 +758,69 @@ def sp_rec_with_labels(vec, labels,
     else:
         return weights*(vec>0)*vec
         
+
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    if not any(y):
+        return np.zeros_like(y)
+    ns = rolling_sd_pd(y)
+    low = y < 2.5*np.median(y)
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    if bias > 0:
+        y = y-bias    
+    vn = y/ns
+    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
+    if labeler_kw is None:
+        labeler_kw={}
+    labels = labeler(vn, **labeler_kw)
+    if not any(labels):
+        return np.zeros_like(y)
+    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+
+def simple_pipeline_nojitter_(y,tau_label=1.5):
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    ns = rolling_sd_pd(y)
+    low = y < 2.5*np.median(y)
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    if bias > 0:
+        y = y-bias    
+    vn = y/ns
+    labels = simple_label(vn, tau=tau_label,with_plots=False)
+    return y * labels
+    #return sp_rec_with_labels(vn, labels,niters=5,with_plots=False)*ns
+
+
+def simple_pipeline_with_baseline(y,tau_label=1.5):
+    """
+    Detect and reconstruct Ca-transients in 1D signal after normalizing to baseline
+    """    
+    b,ns,_ = tmvm_baseline(y)
+    b = b + np.median(y-b)
+    vn = (y-b)/ns
+    labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
+    rec = sp_rec_with_labels(y, labels,with_plots=False,)
+    return where(b>0,rec,0)
+
+from multiprocessing import Pool
+def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
+    """
+    Process temporal signals some pipeline function and return processed signals
+    (parallel version)
+    """
+    out =[]
+    pool = Pool(njobs)
+    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
+    pool.close()
+    pool.join()    
+    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
 def quantify_events(rec, labeled,dt=1):
