@@ -197,7 +197,7 @@ def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
     L = sh[0]
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    out = np.zeros(sh,np.float32)
+    out = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],int)
     mask=np.ones(counts.shape,bool)
     Ln = (2*nhood+1)**2
@@ -235,8 +235,8 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
     L = sh[0]
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    out = np.zeros(sh,np.float32)
-    counts = np.zeros(sh[1:],np.float32)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
     mask=np.ones(counts.shape,bool)
     Ln = (2*nhood+1)**2
     def _process_loc(r,c):
@@ -984,10 +984,109 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     peak = 0
     sum_peak = 0
     for i in range(npc):
-        lm = array(extrema.locextr(p[:,i],x=nu,refine=True,output='max'))
+        lm = np.array(extrema.locextr(p[:,i],x=nu,refine=True,output='max'))
         lm = lm[(lm[:,0]>1/period_low)*(lm[:,0]<1/period_high)]
-        peak_ = amax(lm[:,1])/p[:,i][~nu_phys].mean()*s2[i]
+        peak_ = np.amax(lm[:,1])/p[:,i][~nu_phys].mean()*s2[i]
         #print(amax(lm[:,1]),std(p[:,i]),peak_)
         sum_peak += peak_
         peak = max(peak, peak_)
     return sum_peak
+
+
+def make_enh4(frames,pipeline=simple_pipeline_,kind='pca',nhood=5,stride=2):
+    from imfun import fseq
+    #coll = ucats.signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
+    if kind.lower()=='corr':
+        coll = signals_from_array_correlation(frames,stride=stride,nhood=nhood)
+    elif kind.lower()=='pca':
+        coll = signals_from_array_pca_cluster(frames,stride=stride,nhood=nhood)
+    else:
+        coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1)
+    print('\nTime-signals, grouped,  processing (may take long time) ...')
+    coll_enh = process_signals_parallel(coll,pipeline=pipeline)
+    print('Time-signals processed, recombining to video...')
+    out = combine_weighted_signals(coll_enh,frames.shape)
+    fsx = fseq.from_array(out)
+    print('Done')
+    fsx.meta['channel']='-'.join(['newrec4',kind])
+    return fsx
+
+def process_framestack(frames,min_area=16,verbose=True):
+    """
+    Default pipeline to process a stack of frames containing Ca fluorescence to find astrocytic Ca events
+    Input: F(t): temporal stack of frames (Nframes x Nx x Ny)
+    Output: Collection of two frame stacks containting ΔF/F0 signals, one thresholded and one denoised, and a baseline F0(t): 
+            fseq.FStackColl([fsx, dfof_filtered, F0])
+    """
+    from imfun import fseq
+    if verbose:
+        print('calculating baseline F0(t)')
+    fs_f0 = get_baseline_frames(frames[:])
+    fs_f0.meta['channel'] = 'F0'
+
+    dfof= frames/fs_f0.data - 1
+
+    if verbose:
+        print('filtering ΔF/F0 data')
+    dfof_cleaned = patch_pca_denoise2(dfof, spatial_filter=5, npc=5)
+    fs_dfof = fseq.from_array(dfof_cleaned)
+    fs_dfof.meta['channel'] = 'ΔF/F0 filtered'
+    
+    if verbose:
+        print('detecting events')
+    fsx = make_enh4(dfof_cleaned,nhood=2,kind='pca')
+    coll_ = EventCollection(fsx.data,min_area=min_area)
+    meta = fsx.meta
+    fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0),meta=meta)
+    fscoll = fseq.FStackColl([fsx, fs_dfof, fs_f0])
+    return fscoll
+    
+
+def segment_events(dataset,threshold=0.01):
+    labels, nlab = ndimage.label(np.asarray(dataset,dtype=_dtype_)>threshold)
+    objs = ndimage.find_objects(labels)
+    return labels, objs
+
+
+class EventCollection:
+    def __init__(self, frames, threshold=0.025,min_duration=3,min_area=9):
+        self.min_duration = min_duration
+        self.labels, self.objs = segment_events(frames,threshold)
+        self.coll = [dict(duration=self.event_duration(k),
+                          area = self.event_area(k),
+                          volume = self.event_volume(k),
+                          peak = self.data_value(k,frames),
+                          avg = self.data_value(k,frames,np.mean),
+                          start=self.objs[k][0].start,
+                          idx=k)
+                    for k in range(len(self.objs))]
+        self.filtered_coll = [c for c in self.coll
+                              if c['duration']>min_duration \
+                              and c['peak']>0.05\
+                              and c['area']>min_area]
+    def event_duration(self,k):
+        o = self.objs[k]
+        return o[0].stop-o[0].start
+    def event_volume_mask(self,k):
+        return self.labels[self.objs[k]]==k+1
+    def project_event_mask(self,k):
+        return np.max(self.event_volume_mask(k),axis=0)
+    def event_area(self,k):
+        return np.sum(self.project_event_mask(k).astype(int))
+    def event_volume(self,k):
+        return np.sum(self.event_volume_mask(k))
+    def data_value(self,k,data,fn = np.max):
+        o = self.objs[k]
+        return fn(data[o][self.event_volume_mask(k)])
+    def to_csv(self,name):
+        df = pd.DataFrame(self.filtered_coll)
+        df.to_csv(name)
+    def to_filtered_array(self):
+        sh  = self.labels.shape
+        out = np.zeros(sh,dtype=np.int)
+        for d in self.filtered_coll:
+            k = d['idx']
+            o = self.objs[k]
+            cond = self.labels[o]==k+1
+            out[o][cond] = k
+        return out
