@@ -303,7 +303,7 @@ def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
 
 
 from multiprocessing import Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline,njobs=4):
+def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
     """
     Process temporal signals some pipeline function and return processed signals
     (parallel version)
@@ -560,12 +560,12 @@ def sp_rec_with_labels(vec, labels,
     if not sum(filtered_labels):
         return np.zeros_like(vec)
     vec1 = np.copy(vec)
-    vs = smoother(vec1, min_scale, 5)
+    vs = smoother(vec1, min_scale, min_scale)
     weights = np.clip(labels, 0,1)
     
     #vss = smoother(vec-vs,max_scale,weights=weights<0.9)
 
-    vrec = smoother(vs*(vec1>0),min_scale,5)
+    vrec = smoother(vs*(vec1>0),min_scale,min_scale)
     
     for i in range(niters):
         vec1 = vec1 - kgain*(vec1-vrec)
