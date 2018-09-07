@@ -459,6 +459,30 @@ def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
 
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    if not any(y):
+        return np.zeros_like(y)
+    ns = rolling_sd_pd(y)
+    low = y < 2.5*np.median(y)
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    if bias > 0:
+        y = y-bias    
+    vn = y/ns
+    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
+    if labeler_kw is None:
+        labeler_kw={}
+    labels = labeler(vn, **labeler_kw)
+    if not any(labels):
+        return np.zeros_like(y)
+    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+
+
+
 
 
 from multiprocessing import Pool
@@ -769,28 +793,6 @@ def sp_rec_with_labels(vec, labels,
     else:
         return weights*(vec>0)*vec
         
-
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
-    """
-    Detect and reconstruct Ca-transients in 1D signal
-    """
-    if not any(y):
-        return np.zeros_like(y)
-    ns = rolling_sd_pd(y)
-    low = y < 2.5*np.median(y)
-    if not any(low):
-        low = np.ones(len(y),np.bool)
-    bias = np.median(y[low])
-    if bias > 0:
-        y = y-bias    
-    vn = y/ns
-    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
-    if labeler_kw is None:
-        labeler_kw={}
-    labels = labeler(vn, **labeler_kw)
-    if not any(labels):
-        return np.zeros_like(y)
-    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
 
 def simple_pipeline_nojitter_(y,tau_label=1.5):
     """
