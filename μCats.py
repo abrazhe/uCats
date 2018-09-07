@@ -435,6 +435,13 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
         out = l2spline(out, s=2*hw)
     return out
 
+def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
+    mu = min(np.median(v),0)
+    low = np.percentile(v[v<mu], percentile_low)
+    vs = smoother(v, tau)
+    return vs >= -low
+    
+
 
 def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
     """
@@ -664,13 +671,6 @@ def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
 def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
     return vs >= threshold
-
-def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
-    mu = min(np.median(v),0)
-    low = np.percentile(v[v<mu], percentile_low)
-    vs = smoother(v, tau)
-    return vs >= -low
-    
 
 def with_local_jittering(labeler, niters=100, weight_thresh=0.85):
     def _(v, *args, **kwargs):
