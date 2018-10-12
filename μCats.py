@@ -440,6 +440,13 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
         out = l2spline(out, s=2*hw)
     return out
 
+def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
+    mu = min(np.median(v),0)
+    low = np.percentile(v[v<mu], percentile_low)
+    vs = smoother(v, tau)
+    return vs >= -low
+    
+
 
 def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
     """
@@ -470,9 +477,50 @@ def simple_baseline(y, plow=25, th=3, smooth=25):
     b2 = b + np.median(d[d<th*ns])
     return b2
 
+
 def multi_scale_simple_baseline(y, plow=25, th=3, smooth_levels = [10,20,40,80]):
     b_estimates = [simple_baseline(y,plow,th,smooth) for smooth in smooth_levels]
     return l2spline(np.amin(b_estimates,0),np.amin(smooth_levels))
+
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    if not any(y):
+        return np.zeros_like(y)
+    ns = rolling_sd_pd(y)
+    low = y < 2.5*np.median(y)
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    if bias > 0:
+        y = y-bias    
+    vn = y/ns
+    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
+    if labeler_kw is None:
+        labeler_kw={}
+    labels = labeler(vn, **labeler_kw)
+    if not any(labels):
+        return np.zeros_like(y)
+    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+
+
+
+
+
+from multiprocessing import Pool
+def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
+    """
+    Process temporal signals some pipeline function and return processed signals
+    (parallel version)
+    """
+    out =[]
+    pool = Pool(njobs)
+    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
+    pool.close()
+    pool.join()    
+    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
+
 
 
 from scipy.stats import skew
@@ -641,13 +689,6 @@ def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
     return vs >= threshold
 
-def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
-    mu = min(np.median(v),0)
-    low = np.percentile(v[v<mu], percentile_low)
-    vs = smoother(v, tau)
-    return vs >= -low
-    
-
 def with_local_jittering(labeler, niters=100, weight_thresh=0.85):
     def _(v, *args, **kwargs):
         if 'tau' in kwargs:
@@ -730,9 +771,6 @@ def sp_rec_with_labels(vec, labels,
     if not sum(filtered_labels):
         return np.zeros_like(vec)
     vec1 = np.copy(vec)
-
-    
-    
     vs = smoother(vec1, min_scale, wmedian)
     weights = np.clip(labels, 0,1)
     
@@ -772,28 +810,6 @@ def sp_rec_with_labels(vec, labels,
     else:
         return weights*(vec>0)*vec
         
-
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
-    """
-    Detect and reconstruct Ca-transients in 1D signal
-    """
-    if not any(y):
-        return np.zeros_like(y)
-    ns = rolling_sd_pd(y)
-    low = y < 2.5*np.median(y)
-    if not any(low):
-        low = np.ones(len(y),np.bool)
-    bias = np.median(y[low])
-    if bias > 0:
-        y = y-bias    
-    vn = y/ns
-    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
-    if labeler_kw is None:
-        labeler_kw={}
-    labels = labeler(vn, **labeler_kw)
-    if not any(labels):
-        return np.zeros_like(y)
-    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
 
 def simple_pipeline_nojitter_(y,tau_label=1.5):
     """
