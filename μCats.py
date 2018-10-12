@@ -470,16 +470,19 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     d = res-b
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
-def simple_baseline(y, plow=25, th=3, smooth=25):
+def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     b = l2spline(ndimage.median_filter(y,plow),smooth)
-    ns = rolling_sd_pd(y)
+    if ns is None:
+        ns = rolling_sd_pd(y)
     d = y-b
     b2 = b + np.median(d[d<th*ns])
     return b2
 
 
-def multi_scale_simple_baseline(y, plow=25, th=3, smooth_levels = [10,20,40,80]):
-    b_estimates = [simple_baseline(y,plow,th,smooth) for smooth in smooth_levels]
+def multi_scale_simple_baseline(y, plow=25, th=3, smooth_levels = [10,20,40,80],ns=None):
+    if ns is None:
+        ns = rolling_sd_pd(y)
+    b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
     return l2spline(np.amin(b_estimates,0),np.amin(smooth_levels))
 
 def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
@@ -832,8 +835,10 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
     """
     Detect and reconstruct Ca-transients in 1D signal after normalizing to baseline
     """    
-    b,ns,_ = tmvm_baseline(y)
-    b = b + np.median(y-b)
+    #b,ns,_ = tmvm_baseline(y)
+    #b = b + np.median(y-b)
+    ns = rolling_sd_pd(y)
+    b = multi_scale_simple_baseline(y,ns=ns)
     vn = (y-b)/ns
     labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
     rec = sp_rec_with_labels(y, labels,with_plots=False,)
