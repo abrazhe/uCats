@@ -230,14 +230,19 @@ def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
 
 def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
                        temporal_filter=3,
-                       spatial_filter=3,):
+                       spatial_filter=3,
+                       mask_of_interest=None):
     sh = data.shape
     L = sh[0]
+    
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],_dtype_)
-    mask=np.ones(counts.shape,bool)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
     Ln = (2*nhood+1)**2
     def _process_loc(r,c):
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
@@ -341,7 +346,7 @@ def _baseline_windowed_pca(data,stride=4, nhood=7, ncomp=10,
                 u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
                 points = u[:,:ncomp]
                 #pc_signals = array([medismooth(s) for s in points.T])
-                pc_signals = np.array([simple_get_baselines(s)  for s in points.T])
+                pc_signals = np.array([multi_scale_simple_baseline(s)  for s in points.T])
                 signals = (pc_signals.T@np.diag(s[:ncomp])@vh[:ncomp] + Xc).T
                 out_data[empty_slice+sl] += signals.reshape(pshape)
                 counts[sl] += np.ones(pshape[1:],dtype=int)
@@ -450,7 +455,7 @@ def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
     rsd = rolling_sd_pd(res-b)
     return b,rsd,res
 
-def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
+def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     """
     tMVM-based baseline estimation of time-varying baseline with bias correction
     """
@@ -458,7 +463,16 @@ def simple_get_baselines(y,th=3,smooth=100,symmetric=False):
     d = res-b
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
+def simple_baseline(y, plow=25, th=3, smooth=25):
+    b = l2spline(ndimage.median_filter(y,plow),smooth)
+    ns = rolling_sd_pd(y)
+    d = y-b
+    b2 = b + np.median(d[d<th*ns])
+    return b2
 
+def multi_scale_simple_baseline(y, plow=25, th=3, smooth_levels = [10,20,40,80]):
+    b_estimates = [simple_baseline(y,plow,th,smooth) for smooth in smooth_levels]
+    return l2spline(np.amin(b_estimates,0),np.amin(smooth_levels))
 
 
 from scipy.stats import skew
@@ -894,7 +908,7 @@ def svd_flip_signs(u,vh,medianw=None):
     return u,vh
 
 
-def calculate_baseline(frames,pipeline=simple_get_baselines, stride=2,patch_size=5,return_type='array'):
+def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,patch_size=5,return_type='array'):
     """
     Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence using patch-based processing
     """
@@ -1049,7 +1063,7 @@ def segment_events(dataset,threshold=0.01):
 
 
 class EventCollection:
-    def __init__(self, frames, threshold=0.025,min_duration=3,min_area=9):
+    def __init__(self, frames, threshold=0.025,min_duration=3,min_area=9,peak_threshold=0.05):
         self.min_duration = min_duration
         self.labels, self.objs = segment_events(frames,threshold)
         self.coll = [dict(duration=self.event_duration(k),
@@ -1062,7 +1076,7 @@ class EventCollection:
                     for k in range(len(self.objs))]
         self.filtered_coll = [c for c in self.coll
                               if c['duration']>min_duration \
-                              and c['peak']>0.05\
+                              and c['peak']>peak_threshold\
                               and c['area']>min_area]
     def event_duration(self,k):
         o = self.objs[k]
