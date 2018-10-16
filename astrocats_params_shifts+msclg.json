@@ -1,4 +1,5 @@
-{"stab_model": [["shifts", "multi-templates", {}]],
+{"stab_model": [["shifts", "multi-templates", {}],
+                ["msclg", "multi-templates", {"alpha":1e-5, "rho":6, "rho_l1":0, "sigma":0.0}]],
  "morphology_channel": 0,
  "ca_channel": 1,
  'save_denoised_dfof':1,
