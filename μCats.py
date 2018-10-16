@@ -834,8 +834,8 @@ def simple_pipeline_nojitter_(y,tau_label=1.5):
 def simple_pipeline_with_baseline(y,tau_label=1.5):
     """
     Detect and reconstruct Ca-transients in 1D signal after normalizing to baseline
-    """    
     #b,ns,_ = tmvm_baseline(y)
+    """    
     #b = b + np.median(y-b)
     ns = rolling_sd_pd(y)
     b = multi_scale_simple_baseline(y,ns=ns)
@@ -1028,15 +1028,15 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     return sum_peak
 
 
-def make_enh4(frames,pipeline=simple_pipeline_,kind='pca',nhood=5,stride=2):
+def make_enh4(frames, pipeline=simple_pipeline_, kind='pca', nhood=5, stride=2, mask_of_interest=None):
     from imfun import fseq
     #coll = ucats.signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
     if kind.lower()=='corr':
-        coll = signals_from_array_correlation(frames,stride=stride,nhood=nhood)
+        coll = signals_from_array_correlation(frames,stride=stride,nhood=nhood,mask_of_interest=mask_of_interest)
     elif kind.lower()=='pca':
-        coll = signals_from_array_pca_cluster(frames,stride=stride,nhood=nhood)
+        coll = signals_from_array_pca_cluster(frames,stride=stride,nhood=nhood,mask_of_interest=mask_of_interest)
     else:
-        coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1)
+        coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1,mask_of_interest=mask_of_interest)
     print('\nTime-signals, grouped,  processing (may take long time) ...')
     coll_enh = process_signals_parallel(coll,pipeline=pipeline)
     print('Time-signals processed, recombining to video...')
@@ -1050,7 +1050,7 @@ def process_framestack(frames,min_area=16,verbose=True):
     """
     Default pipeline to process a stack of frames containing Ca fluorescence to find astrocytic Ca events
     Input: F(t): temporal stack of frames (Nframes x Nx x Ny)
-    Output: Collection of two frame stacks containting ΔF/F0 signals, one thresholded and one denoised, and a baseline F0(t): 
+    Output: Collection of three frame stacks containting ΔF/F0 signals, one thresholded and one denoised, and a baseline F0(t): 
             fseq.FStackColl([fsx, dfof_filtered, F0])
     """
     from imfun import fseq
