@@ -77,7 +77,22 @@ def main():
         '--save-denoised-dfof': dict(action='store_true'),
         '--no-events': dict(action='store_true'),
         '--skip-existing': dict(action='store_true'),
-        '--do-oscillations': dict(action='store_true'),        
+        '--do-oscillations': dict(action='store_true'),
+        '--detection-do-jitter':dict(default=0,type=bool,
+                                        help='whether to use local jitter in detection algorithm;\
+ reduces false positive ratio, but can lead to missed events'),
+        '--detection-low-percentile':dict(default=1.5, type=float,
+                                          help='lower values detect less FPs, higher values make more detections'),
+        '--detection-tau-smooth':dict(default=2., type=float,
+                                      help='smoothing in detection, make larger for less false positives,\
+ make smaller for detection of smaller events'),
+        '--detection-loc-nhood':dict(default=2,type=int),
+        '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
+        '--signal-patch-denoise-npc':dict(default=5,type=int),
+        '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
+        '--event-peak-threshold':dict(default=0.1, type=float,help='event must contain a peak with at least this ΔF/F value'),
+        '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
+        '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
         '--bitrate':dict(default=32000,type=float, help='bitrate of exported movie'),
         }
 
@@ -124,6 +139,14 @@ def main():
     detected_name = args.name+'-detected-%s.h5'%args.suff
     colored_mask = dark_area_mask(benh.data.mean(0))
 
+    f,ax = plt.subplots(1,1,figsize=(8,8));
+    ax.imshow(benh.data.mean(0),cmap='gray')
+    ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
+    plt.tight_layout()
+    f.savefig(args.name+'-colored_mask.png')
+    plt.close(f)
+    
+
     # IV. Process data
     if os.path.exists(detected_name):
         print('loading existing results of event detection:', detected_name)
@@ -132,15 +155,30 @@ def main():
     else:
         print("Calculating 'augmented' data")
         print(' - denoising ΔF/F frames')
-        dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,npc=5,spatial_filter=5,
+        dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
+                                                npc=args.signal_patch_denoise_npc,
+                                                spatial_filter=args.signal_patch_denoise_spatial_size,
                                                 mask_of_interest=colored_mask)
         if args.save_denoised_dfof:
             fs_tmp_ = fseq.from_array(dfof_cleaned)
             fs_tmp_.meta['channel'] = 'dfof_denoised'
-            fs_tmp_.to_hdf5(args.name + '-dfof-denoised-%s.h5'%args.suff)
+            fs_tmp_.to_hdf5(args.name + '-dfof-denoised-%s.h5'%args.suff,mode='w')
         print(' - Detecting and cleaning up events...')
-        fsx = ucats.make_enh4(dfof_cleaned,kind='pca', nhood=2, mask_of_interest=colored_mask)
-        coll_ = ucats.EventCollection(fsx.data,min_area=16)
+
+        labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
+        labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+
+        fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
+                              labeler = labeler,
+                              labeler_kw=labeler_kwargs,
+                              mask_of_interest=colored_mask)
+        
+        coll_ = ucats.EventCollection(fsx.data, 
+                                      threshold=args.event_segmentation_threshold,                                     
+                                      min_area=args.event_min_area,
+                                      min_duration=args.event_min_duration,
+                                      peak_threshold=args.event_peak_threshold)
+                                      
         meta = fsx.meta
         fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0))
         fsx.meta = meta
@@ -163,9 +201,9 @@ def main():
     p0.clims[0] = bgclim
     p.clims[0] = bgclim
     p.clims[1] = (0.025,0.25)
-    p._ccmap = dict(b=1,i=None,r=1,g=0)
+    p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
-    ui.pickers_to_movie([p0, p],args.name+'-detected-%s.mp4'%args.suff, titles=('raw','processed'),
+    ui.pickers_to_movie([p0, p],args.name+'-b-detected-%s.mp4'%args.suff, titles=('raw','processed'),
                         codec=args.codec,
                         bitrate=args.bitrate,
                         writer=args.writer)
@@ -175,7 +213,7 @@ def main():
     if len(events.filtered_coll):
         events.to_csv(args.name+'-events-%s.csv'%args.suff)
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
-    animate_events(frames_out, events,args, args.name+'-events-%s.mp4'%args.suff)
+    animate_events(frames_out, events,args, args.name+'-c-events-%s.mp4'%args.suff)
     if h5f:
         h5f.close()
 
@@ -292,27 +330,37 @@ def stabilize_motion(fs, args,suff=''):
                 warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],**model_params)
             warp_history.append(warps)
             newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu)
-            mx_warps = max_shifts(warps, args.verbose)            
+            mx_warps = ucats.max_shifts(warps, args.verbose)            
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
         # end else
-    mx_warps = max_shifts(final_warps, args.verbose)
+    mx_warps = ucats.max_shifts(final_warps, args.verbose)
     fsc = ofreg.warps.map_warps(final_warps, fs)
     fsc.meta['file_path']=fs.meta['file_path']
     fsc.meta['channel'] = fs.meta['channel']+'-sc'
     if isinstance(fs,fseq.FStackColl):
         for stack in fsc.stacks:
-            stack.data = crop_by_max_shift(stack.data,final_warps,mx_warps)
+            stack.data = ucats.crop_by_max_shift(stack.data,final_warps,mx_warps)
     else:
-        fsc.data = crop_by_max_shift(fsc.data,final_warps,mx_warps)
+        fsc.data = ucats.crop_by_max_shift(fsc.data,final_warps,mx_warps)
     if args.with_movies:
         p1 = ui.Picker(fs)
         p2 = ui.Picker(fsc)
         clims = ui.harmonize_clims([p1,p2])
         p1.clims = clims
         p2.clims = clims
-        ui.pickers_to_movie([p1, p2],fs.meta['file_path']+'-stabilization-%s.mp4'%suff,
+        pickers_list = [p1,p2]
+        
+        if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
+            p3 = ui.Picker(fs.stacks[morphology_channel])
+            p4 = ui.Picker(fsc.stacks[morphology_channel])
+            clims = ui.harmonize_clims([p3,p4])
+            p3.clims = clims
+            p4.clims = clims
+            pickers_list.extend([p3,p4])
+
+        ui.pickers_to_movie(pickers_list, fs.meta['file_path']+'-a-stabilization-%s.mp4'%suff,
                             codec=args.codec, writer=args.writer,titles=('raw', 'stabilized'))
     
     return fsc # from stabilize_motion
@@ -329,19 +377,6 @@ def prep_mean_frame(fs):
         mfs += [z]*(3-len(mfs))
     return dstack(mfs[:3])
 
-def max_shifts(shifts,verbose=0):
-    #ms = np.max(np.abs([s.fn_((0,0)) if s.fn_ else s.field[...,0,0] for s in shifts]),axis=0)
-    ms = np.max([np.array([np.percentile(f,99) for f in np.abs(w.field)]) for w in shifts],0)
-    if verbose: print('Maximal shifts were (x,y): ', ms)
-    return ceil(ms).astype(int)
-
-def crop_by_max_shift(data, shifts, mx_shifts=None):
-    if mx_shifts is None:
-        mx_shifts = max_shifts(shifts)
-    lims = 2*mx_shifts
-    return data[:,lims[1]:-lims[1],lims[0]:-lims[0]]
-
-
 def endswith_any(s, suff_list):
     return reduce(op.or_, (s.endswith(suff) for suff in suff_list))
 
@@ -356,7 +391,8 @@ def remove_small_regions(mask, min_size=200):
 from scipy.ndimage import binary_fill_holes, binary_closing, binary_opening
 def dark_area_mask(mf):
     mask = mf > np.percentile(mf,99.5)*0.1
-    return binary_fill_holes(remove_small_regions(binary_opening(binary_closing(mask))))
+    #return binary_fill_holes(remove_small_regions(binary_opening(binary_closing(mask))))
+    return remove_small_regions(binary_opening(binary_closing(mask)))
 
 from matplotlib import animation
 

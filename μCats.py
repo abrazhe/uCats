@@ -270,10 +270,10 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
                 _process_loc(r,c)
-    out = out/counts[None,:,:]
+    out = out/(1e-12+counts[None,:,:])
     for r in range(sh[1]):
         for c in range(sh[2]):
-            if counts[r,c] ==0:
+            if counts[r,c] == 0:
                 out[:,r,c] = 0
     return out
 
@@ -440,7 +440,7 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
         out = l2spline(out, s=2*hw)
     return out
 
-def percentile_label(v, percentile_low=5.0,tau=1.0,smoother=l2spline):
+def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
     mu = min(np.median(v),0)
     low = np.percentile(v[v<mu], percentile_low)
     vs = smoother(v, tau)
@@ -479,20 +479,22 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     return b2
 
 
-def multi_scale_simple_baseline(y, plow=25, th=3, smooth_levels = [10,20,40,80],ns=None):
+def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
-    return l2spline(np.amin(b_estimates,0),np.amin(smooth_levels))
+    return  l2spline(np.amin(b_estimates,0),np.mean(smooth_levels))
 
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
+
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=False):
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
     if not any(y):
         return np.zeros_like(y)
     ns = rolling_sd_pd(y)
-    low = y < 2.5*np.median(y)
+    #low = y < 2.5*np.median(y)
+    low = y < np.median(y) + 1.5*ns
     if not any(low):
         low = np.ones(len(y),np.bool)
     bias = np.median(y[low])
@@ -505,23 +507,30 @@ def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None):
     labels = labeler(vn, **labeler_kw)
     if not any(labels):
         return np.zeros_like(y)
-    return sp_rec_with_labels(vn, labels,with_plots=False)*ns
+    return sp_rec_with_labels(vn, labels,with_plots=False,return_smoothed=smoothed_rec)*ns
 
 
 
 
 
-from multiprocessing import Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
+#from multiprocessing import Pool
+from pathos.pools import ProcessPool as Pool
+def process_signals_parallel(collection, pipeline=simple_pipeline_,pipeline_kw=None,njobs=4):
     """
     Process temporal signals some pipeline function and return processed signals
     (parallel version)
     """
     out =[]
     pool = Pool(njobs)
-    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
-    pool.close()
-    pool.join()    
+    #def _pipeline_(*args):
+    #    if pipeline_kw is not None:
+    #        return pipeline(*args, **pipeline_kw)
+    #    else:
+    #        return pipeline(*args)
+    _pipeline_ = pipeline if pipeline_kw is None else partial(pipeline, **pipeline_kw)
+    recs = pool.map(_pipeline_, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
+    #pool.close()
+    #pool.join()    
     return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
@@ -844,18 +853,18 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
     rec = sp_rec_with_labels(y, labels,with_plots=False,)
     return where(b>0,rec,0)
 
-from multiprocessing import Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
-    """
-    Process temporal signals some pipeline function and return processed signals
-    (parallel version)
-    """
-    out =[]
-    pool = Pool(njobs)
-    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
-    pool.close()
-    pool.join()    
-    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
+#from multiprocessing import Pool
+#def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
+#    """
+#    Process temporal signals some pipeline function and return processed signals
+#    (parallel version)
+#    """
+#    out =[]
+#    pool = Pool(njobs)
+#    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
+#    pool.close()
+#    pool.join()    
+#    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
 def quantify_events(rec, labeled,dt=1):
@@ -981,7 +990,7 @@ def get_baseline_frames(frames,smooth=60,npc=None):
     
 from imfun.core import coords
 from numpy.linalg import svd
-from multiprocessing import Pool
+#from multiprocessing import Pool
 def map_patches(fn, data,patch_size=10,stride=1,tslice=slice(None),njobs=1):
     """
     Apply some function to a square patch exscized from video
@@ -1028,7 +1037,10 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     return sum_peak
 
 
-def make_enh4(frames, pipeline=simple_pipeline_, kind='pca', nhood=5, stride=2, mask_of_interest=None):
+def make_enh4(frames, pipeline=simple_pipeline_,
+              labeler=percentile_label,
+              kind='pca', nhood=5, stride=2, mask_of_interest=None,
+              labeler_kw=None):
     from imfun import fseq
     #coll = ucats.signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
     if kind.lower()=='corr':
@@ -1038,7 +1050,8 @@ def make_enh4(frames, pipeline=simple_pipeline_, kind='pca', nhood=5, stride=2, 
     else:
         coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1,mask_of_interest=mask_of_interest)
     print('\nTime-signals, grouped,  processing (may take long time) ...')
-    coll_enh = process_signals_parallel(coll,pipeline=pipeline)
+    coll_enh = process_signals_parallel(coll,pipeline=pipeline,
+                                        pipeline_kw=dict(labeler=labeler,labeler_kw=labeler_kw))
     print('Time-signals processed, recombining to video...')
     out = combine_weighted_signals(coll_enh,frames.shape)
     fsx = fseq.from_array(out)
@@ -1046,7 +1059,24 @@ def make_enh4(frames, pipeline=simple_pipeline_, kind='pca', nhood=5, stride=2, 
     fsx.meta['channel']='-'.join(['newrec4',kind])
     return fsx
 
-def process_framestack(frames,min_area=16,verbose=True):
+
+
+def max_shifts(shifts,verbose=0):
+    #ms = np.max(np.abs([s.fn_((0,0)) if s.fn_ else s.field[...,0,0] for s in shifts]),axis=0)
+    ms = np.max([np.array([np.percentile(f,99) for f in np.abs(w.field)]) for w in shifts],0)
+    if verbose: print('Maximal shifts were (x,y): ', ms)
+    return np.ceil(ms).astype(int)
+
+def crop_by_max_shift(data, shifts, mx_shifts=None):
+    if mx_shifts is None:
+        mx_shifts = max_shifts(shifts)
+    lims = 2*mx_shifts
+    return data[:,lims[1]:-lims[1],lims[0]:-lims[0]]
+
+
+
+
+def process_framestack(frames,min_area=16,verbose=False,pipeline=simple_pipeline_,labeler=percentile_label,labeler_kw=None):
     """
     Default pipeline to process a stack of frames containing Ca fluorescence to find astrocytic Ca events
     Input: F(t): temporal stack of frames (Nframes x Nx x Ny)
@@ -1069,7 +1099,7 @@ def process_framestack(frames,min_area=16,verbose=True):
     
     if verbose:
         print('detecting events')
-    fsx = make_enh4(dfof_cleaned,nhood=2,kind='pca')
+    fsx = make_enh4(dfof_cleaned,nhood=2,kind='pca',pipeline=pipeline,labeler=labeler,labeler_kw=labeler_kw)
     coll_ = EventCollection(fsx.data,min_area=min_area)
     meta = fsx.meta
     fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0),meta=meta)

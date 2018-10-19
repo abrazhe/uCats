@@ -4,5 +4,7 @@
  "save_denoised_dfof":1,
  "with_movies": 1,
  "suff":"astrocat001",
- "pca_denoise": 1
+ "pca_denoise": 1,
+ "detection_low_percentile": 1.5,
+ "detection_tau_smooth":2.0
 }
