@@ -923,7 +923,7 @@ def pca_flip_signs(pcf,medianw=None):
         sg = np.sign(sk)
         #print(i, sk)
         pcf.coords[:,i] *= sg
-        pcf.tsvd.components_[:,i]*=sg
+        pcf.tsvd.components_[i]*=sg
     return pcf
 
 def svd_flip_signs(u,vh,medianw=None):
@@ -934,17 +934,18 @@ def svd_flip_signs(u,vh,medianw=None):
         sk = skew(c-ndimage.median_filter(c,medianw))
         sg = np.sign(sk)
         u[:,i] *= sg
-        vh[i]*=sg
+        vh[i] *= sg
     return u,vh
 
 
-def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,patch_size=5,return_type='array'):
+def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,patch_size=5,return_type='array',
+                       pipeline_kw=None):
     """
     Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence using patch-based processing
     """
     from imfun import fseq
     collection = signals_from_array_avg(frames,stride=stride, patch_size=patch_size)
-    recsb = process_signals_parallel(collection, pipeline=pipeline, njobs=4)
+    recsb = process_signals_parallel(collection, pipeline=pipeline, pipeline_kw=pipeline_kw,njobs=4, )
     sh = frames.shape
     out =  combine_weighted_signals(recsb, sh)
     if return_type.lower() == 'array':
@@ -963,8 +964,11 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
             npc = len(frames)//20
         pcf = components.pca.PCA_frames(frames,npc=npc)
     pca_flip_signs(pcf)
-    #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T    
-    base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+    #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
+    if smooth > 0:
+        base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+    else:
+        base_coords = pcf.coords
     #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
     #base_coords = np.array([simple_get_baselines(v) for v in pcf.coords.T]).T
     baseline_frames = pcf.tsvd.inverse_transform(base_coords).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
@@ -975,7 +979,7 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     fs_base.meta['channel'] = 'baseline_pca'
     return fs_base
 
-def get_baseline_frames(frames,smooth=60,npc=None):
+def get_baseline_frames(frames,smooth=60,npc=None,baseline_fn=multi_scale_simple_baseline,baseline_kw=None):
     """
     Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence, two-stage processing
     (1) global trends via PCA
@@ -983,7 +987,7 @@ def get_baseline_frames(frames,smooth=60,npc=None):
     """
     from imfun import fseq
     base1 = calculate_baseline_pca(frames,smooth=smooth,npc=npc)
-    base2 = calculate_baseline(frames-base1)
+    base2 = calculate_baseline(frames-base1, pipeline=baseline_fn, pipeline_kw=baseline_kw)
     fs_base = fseq.from_array(base1+base2)
     fs_base.meta['channel']='baseline_comb'
     return fs_base
@@ -1076,7 +1080,12 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
 
 
 
-def process_framestack(frames,min_area=16,verbose=False,pipeline=simple_pipeline_,labeler=percentile_label,labeler_kw=None):
+def process_framestack(frames,min_area=16,verbose=False,
+                       baseline_fn = multi_scale_simple_baseline,
+                       baseline_kw = dict(smooth_levels=(10,20,40,80)),
+                       pipeline=simple_pipeline_,
+                       labeler=percentile_label,
+                       labeler_kw=None):
     """
     Default pipeline to process a stack of frames containing Ca fluorescence to find astrocytic Ca events
     Input: F(t): temporal stack of frames (Nframes x Nx x Ny)
@@ -1086,7 +1095,7 @@ def process_framestack(frames,min_area=16,verbose=False,pipeline=simple_pipeline
     from imfun import fseq
     if verbose:
         print('calculating baseline F0(t)')
-    fs_f0 = get_baseline_frames(frames[:])
+    fs_f0 = get_baseline_frames(frames[:],baseline_fn=baseline_fn, baseline_kw=baseline_kw)
     fs_f0.meta['channel'] = 'F0'
 
     dfof= frames/fs_f0.data - 1
@@ -1095,7 +1104,7 @@ def process_framestack(frames,min_area=16,verbose=False,pipeline=simple_pipeline
         print('filtering ΔF/F0 data')
     dfof_cleaned = patch_pca_denoise2(dfof, spatial_filter=5, npc=5)
     fs_dfof = fseq.from_array(dfof_cleaned)
-    fs_dfof.meta['channel'] = 'ΔF/F0 filtered'
+    fs_dfof.meta['channel'] = 'ΔF_over_F0 filtered'
     
     if verbose:
         print('detecting events')

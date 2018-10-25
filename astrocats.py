@@ -277,6 +277,8 @@ def stabilize_motion(fs, args,suff=''):
     models = [isinstance(m,str) and m or m[0] for m in args.stab_model]
     suff = suff+'-' + '-'.join(models) + '-ch-%d'%(args.morphology_channel)
     warps_name = fs.meta['file_path']+suff+'.npy'
+    fsm_filtered = None
+    newframes = None
     if os.path.exists(warps_name):
         print('Loading pre-calculated movement correction:', warps_name)
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
@@ -292,16 +294,17 @@ def stabilize_motion(fs, args,suff=''):
         if args.verbose > 1: print('done spatial median filter')
 
         if args.pca_denoise:
-            pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//100+10)
-            if args.verbose>1: print('done truncated PCA projection')
-            fsm_filtered.frame_filters = [pcf.approx]
-            fsm_filtered = fseq.from_array(fsm_filtered[:])
+            #pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//100+10)
+            #if args.verbose>1: print('done truncated PCA projection')
+            #fsm_filtered.frame_filters = [pcf.approx]
+            #fsm_filtered = fseq.from_array(fsm_filtered[:])
+            fsm_filtered = ucats.calculate_baseline_pca(fsm_filtered, smooth=0, return_type='fs',npc=5*len(fs)//100)
             if args.verbose>1: print('done PCA-based denoising')
 
         # Additional smoothing and removing trend
-        fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
-        fsm_filtered = fseq.from_array(fsm_filtered[:])
-        if args.verbose>1: print('done flattening')
+        #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
+        #fsm_filtered = fseq.from_array(fsm_filtered[:])
+        #if args.verbose>1: print('done flattening')
         if args.verbose: print('Done filtering')
 
         operations = args.stab_model
@@ -353,8 +356,14 @@ def stabilize_motion(fs, args,suff=''):
         pickers_list = [p1,p2]
         
         if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
-            p3 = ui.Picker(fs.stacks[morphology_channel])
-            p4 = ui.Picker(fsc.stacks[morphology_channel])
+            if fsm_filtered is None:
+                p3 = ui.Picker(fs.stacks[morphology_channel])
+            else:
+                p3 = ui.Picker(fseq.from_array(fsm_filtered))
+            if newframes is None:
+                p4 = ui.Picker(fsc.stacks[morphology_channel])
+            else:
+                p4 = ui.Picker(fseq.from_array(newframes))
             clims = ui.harmonize_clims([p3,p4])
             p3.clims = clims
             p4.clims = clims
