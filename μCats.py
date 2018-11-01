@@ -867,13 +867,13 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
 #    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
-def quantify_events(rec, labeled,dt=1):
+def quantify_events(rec, labeled, dt=1):
     "Collect information about transients for a 1D reconstruction"
     acc = []
     idx = np.arange(len(rec))
     for i in range(1,np.max(labeled)+1):
         mask = labeled==i
-        cut = rec[mask],
+        cut = rec[mask]
         ev = dict(
             start = np.min(idx[mask]),
             stop = np.max(idx[mask]),
@@ -885,30 +885,36 @@ def quantify_events(rec, labeled,dt=1):
 
 from imfun.core import extrema
 
-def segment_events(rec, th=0.25):
+def segment_events_1d(rec, th=0.05, th2 =0.1, smoothing=6, min_lenth=3):
     levels = rec>th
     labeled, nlab = ndimage.label(levels)
-    smrec = l1spline(rec, 6)
+    smrec = l1spline(rec, smoothing)
     #smrec = l2spline(rec, 6)
-    mxs = np.array(extrema.locextr(smrec, output='max',refine=False),int)
-    mns = np.array(extrema.locextr(smrec, output='min',refine=False),int)
-    if not len(mxs) or not len(mns) or not np.any(mxs[:,1]>1):
+    mxs = np.array(extrema.locextr(smrec, output='max',refine=False))
+    mns = np.array(extrema.locextr(smrec, output='min',refine=False))
+    if not len(mxs) or not len(mns) or not np.any(mxs[:,1]>th2):
         return labeled, nlab
-    mxs = mxs[mxs[:,1]>1]
+    mxs = mxs[mxs[:,1]>th2]
     cuts = []
     
     for i in range(1,nlab+1):
         mask = labeled==i
-        lmax = [m for m in mxs if mask[m[0]]]
+        lmax = [m for m in mxs if mask[int(m[0])]]
         if len(lmax)>1:
-            th = np.min([m[1] for m in lmax])*0.75
-            lms = [mn for mn in mns if mask[mn[0]] and mn[1]<th]
+            th = np.max([m[1] for m in lmax])*0.75
+            lms = [mn for mn in mns if mask[int(mn[0])] and mn[1]<th]
             if len(lms):
-                #print "Possibly batched",i
                 for lm in lms:
-                    cuts.append(lm[0])
-                    levels[lm[0]]=False
+                    tmp_mask = mask.copy()
+                    tmp_mask[int(lm[0])] = 0
+                    ll_,nl_ = ndimage.label(tmp_mask)
+                    min_region = np.min([np.sum(ll_ == i_) for i_ in range(1,nl_+1)])
+                    if min_region > min_lenth:
+                        cuts.append(lm[0])
+                        levels[int(lm[0])]=False
+                    
     labeled,nlab=ndimage.label(levels)
+    
     #plot(labeled>0)
     return labeled, nlab
     #    plot(rec*(labeled==i),alpha=0.5)
