@@ -123,7 +123,7 @@ def main():
     # I.   Load record(s)
     fs = load_record(args.name, ca_channel=args.ca_channel)
     # II.  Stabilize motion artifacts
-    fsc = stabilize_motion(fs, args)
+    fsc,_ = stabilize_motion(fs, args)
 
     if isinstance(fsc, fseq.FStackColl) and len(fsc.stacks) > 1:
         fsc = fsc.stacks[args.ca_channel]
@@ -293,13 +293,12 @@ def stabilize_motion(fs, args,suff=''):
         fsm.frame_filters = []
         if args.verbose > 1: print('done spatial median filter')
 
+        
         if args.pca_denoise:
-            #pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//100+10)
-            #if args.verbose>1: print('done truncated PCA projection')
-            #fsm_filtered.frame_filters = [pcf.approx]
-            #fsm_filtered = fseq.from_array(fsm_filtered[:])
-            fsm_filtered = ucats.calculate_baseline_pca(fsm_filtered, smooth=0, return_type='fs',npc=5*len(fs)//100)
+            pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//100+5)
+            fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + pcf.mean_frame
             if args.verbose>1: print('done PCA-based denoising')
+        else: pcf = None
 
         # Additional smoothing and removing trend
         #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
@@ -325,12 +324,15 @@ def stabilize_motion(fs, args,suff=''):
                 print('correcting for {} using {} with params: {}'.format(model, stab_type, model_params))
             template = newframes[:10].mean(0)
             if stab_type == 'template':
-                warps = stackreg.to_template(newframes, template, regfn=imgreg_dispatcher_[model], **model_params)
+                warps = stackreg.to_template(newframes, template, regfn=imgreg_dispatcher_[model],
+                                             njobs=args.ncpu, **model_params)
             elif stab_type == 'updated_template':
                 warps = stackreg.to_updated_template(newframes, template, regfn=imgreg_dispatcher_[model], **model_params)
             elif stab_type in ['multi', 'multi-templates', 'pca-templates']:
-                templates, affs = fseq.frame_exemplars_pca_som(newframes)
-                warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],**model_params)
+                templates, affs = fseq.frame_exemplars_pca_som(newframes,pcf=pcf)
+                warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],
+                                              njobs=args.ncpu,                                              
+                                              **model_params)
             warp_history.append(warps)
             newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu)
             mx_warps = ucats.max_shifts(warps, args.verbose)            
@@ -372,7 +374,7 @@ def stabilize_motion(fs, args,suff=''):
         ui.pickers_to_movie(pickers_list, fs.meta['file_path']+'-a-stabilization-%s.mp4'%suff,
                             codec=args.codec, writer=args.writer,titles=('raw', 'stabilized'))
     
-    return fsc # from stabilize_motion
+    return fsc,warps # from stabilize_motion
 
 
 def simple_rescale(m):
