@@ -366,7 +366,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
                 warps = stackreg.to_template(newframes, template, regfn=imgreg_dispatcher_[model],
                                              njobs=args.ncpu, **model_params)
             elif stab_type == 'updated_template':
-                warps = stackreg.to_updated_template(newframes, template, regfn=imgreg_dispatcher_[model], **model_params)
+                warps = stackreg.to_updated_template(newframes, template, njobs=args.ncpu,
+                                                     regfn=imgreg_dispatcher_[model], **model_params)
             elif stab_type in ['multi', 'multi-templates', 'pca-templates']:
                 templates, affs = fseq.frame_exemplars_pca_som(newframes,npc=len(fsm)//100+5)
                 warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],
@@ -380,7 +381,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
         # end else
     mx_warps = ucats.max_shifts(final_warps, args.verbose)
-    fsc = ofreg.warps.map_warps(final_warps, fs)
+    fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
     fsc.meta['file_path']=fs.meta['file_path']
     fsc.meta['channel'] = fs.meta['channel']+'-sc'
     if isinstance(fs,fseq.FStackColl):
