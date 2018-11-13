@@ -382,7 +382,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
-        del warp_history
+        del warp_history, final_warps
+        final_warps = ofreg.warps.from_dct_encoded(warps_name)
         # end else
     mx_warps = ucats.max_shifts(final_warps, args.verbose)
     fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
@@ -404,7 +405,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         p2.clims = clims
         pickers_list = [p1,p2]
         
-        if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
+        if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1 or\
+           ((fsm_filtered is not None) and (newframes is not None)):
             if fsm_filtered is None:
                 p3 = ui.Picker(fs.stacks[morphology_channel])
             else:
