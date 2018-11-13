@@ -64,7 +64,7 @@ def main():
                                available models: {shifts, mslkp, msclg, affine, Greenberg-Kerr, homography}')),
         '-n': ('--ncpu', dict(default=4, type=int, help="number of CPU cores to use")),
         #'--record': dict(default=None, help='record within file to use (where applicable)'),
-        '-v': ('--verbose', dict(action='count', help='increment verbosity level')),
+        '-v': ('--verbose', dict(action='count', default=0, help='increment verbosity level')),
         '--morphology-channel': dict(default=0,type=int, help='color channel to use for motion correction (if several)'),
         '--ca-channel':dict(default=1, type=int, help='color channel with Ca-dependent fluorescence'),
         '--with-movies': dict(action='store_true'),
@@ -118,35 +118,70 @@ def main():
             pars = json.load(jsonfile)
             for key in pars:
                 setattr(args, key, pars[key])
-    
-    print("Processing", args.name)
-    # I.   Load record(s)
-    fs = load_record(args.name, ca_channel=args.ca_channel)
+
+    if args.name.endswith('.lif'):
+        process_lif_file(args.name,args)
+    else:
+        print("Processing", args.name)
+        # I.   Load record(s)
+        fs = load_record(args.name, ca_channel=args.ca_channel)
+        process_record(fs, args.name, '', args)
+    print('processing done')
+    return # from main
+
+
+import gc
+def process_lif_file(fname, args,min_frames=600):
+    import io_lif
+    print('------------------------------------------------------------------------------------------')
+    print('Processing file',fname)
+    metaxml,lif_recs = io_lif.load_meta_records(fname) # load record descriptions
+    for rec in lif_recs:
+        print(rec)
+        if rec.get_size('T') > min_frames:
+            print('Will process %s:%s'%(fname, rec.name))
+            safename = rec.name.replace('/','_')
+            fs = rec.load_timelapse(fname)
+            fs.meta['file_path'] = fname
+            process_record(fs,fname,safename,args)
+
+            del fs
+            plt.close('all')
+            gc.collect()
+    io_lif.javabridge.kill_vm()
+
+
+def process_record(fs, fname, series, args):
+    nametag = '-'.join((fname,series,args.suff))
+    print('nametag is:', nametag)
     # II.  Stabilize motion artifacts
-    fsc,_ = stabilize_motion(fs, args)
+    fsc,_ = stabilize_motion(fs, args,nametag)
 
     if isinstance(fsc, fseq.FStackColl) and len(fsc.stacks) > 1:
         fsc = fsc.stacks[args.ca_channel]
+
+
     
-
-
+    
     # III. Calculate baseline
     print('Calculating dynamic fluorescence baseline for motion-corrected data')
     smooth,mw = len(fsc)//10, len(fsc)//5
     #benh = ucats.calculate_baseline_pca(fsc.data, smooth=smooth,medianw=mw)
     benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
     h5f = None
-    detected_name = args.name+'-detected-%s.h5'%args.suff
+    detected_name = nametag+'-detected.h5'
     colored_mask = dark_area_mask(benh.data.mean(0))
 
     f,ax = plt.subplots(1,1,figsize=(8,8));
     ax.imshow(benh.data.mean(0),cmap='gray')
     ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
     plt.tight_layout()
-    f.savefig(args.name+'-colored_mask.png')
+    f.savefig(nametag+'-colored_mask.png')
     plt.close(f)
-    
 
+    
+    if args.no_events:
+        return
     # IV. Process data
     if os.path.exists(detected_name):
         print('loading existing results of event detection:', detected_name)
@@ -162,7 +197,7 @@ def main():
         if args.save_denoised_dfof:
             fs_tmp_ = fseq.from_array(dfof_cleaned)
             fs_tmp_.meta['channel'] = 'dfof_denoised'
-            fs_tmp_.to_hdf5(args.name + '-dfof-denoised-%s.h5'%args.suff,mode='w')
+            fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
         print(' - Detecting and cleaning up events...')
 
         labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
@@ -203,7 +238,7 @@ def main():
     p.clims[1] = (0.025,0.25)
     p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
-    ui.pickers_to_movie([p0, p],args.name+'-b-detected-%s.mp4'%args.suff, titles=('raw','processed'),
+    ui.pickers_to_movie([p0, p],nametag+'-b-detected.mp4', titles=('raw','processed'),
                         codec=args.codec,
                         bitrate=args.bitrate,
                         writer=args.writer)
@@ -211,13 +246,15 @@ def main():
     print('segmenting and animating events')
     events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32))
     if len(events.filtered_coll):
-        events.to_csv(args.name+'-events-%s.csv'%args.suff)
+        events.to_csv(nametag+'-events.csv')
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
-    animate_events(frames_out, events,args, args.name+'-c-events-%s.mp4'%args.suff)
+    animate_events(frames_out, events,args, nametag+'-c-events.mp4')
+    print('All done')
     if h5f:
         h5f.close()
-
-    return # from main()
+    return # from process_record()
+    
+                       
 
 
 def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
@@ -265,7 +302,7 @@ imgreg_dispatcher_ = {'affine':imgreg.affine,
                       'msclg':imgreg.msclg}
 
 
-def stabilize_motion(fs, args,suff=''):
+def stabilize_motion(fs, args, nametag='',suff=None):
     "Try to remove motion artifacts by image registratio"
     morphology_channel = args.morphology_channel
     if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
@@ -276,7 +313,9 @@ def stabilize_motion(fs, args,suff=''):
     if suff is None: suff = ''
     models = [isinstance(m,str) and m or m[0] for m in args.stab_model]
     suff = suff+'-' + '-'.join(models) + '-ch-%d'%(args.morphology_channel)
-    warps_name = fs.meta['file_path']+suff+'.npy'
+    #warps_name = fs.meta['file_path']+suff+'.npy'
+    #warps_name = nametag+suff+'-warps.npy'
+    warps_name = '-'.join((nametag, suff, 'warps.npy'))
     fsm_filtered = None
     newframes = None
     if os.path.exists(warps_name):
@@ -329,7 +368,7 @@ def stabilize_motion(fs, args,suff=''):
             elif stab_type == 'updated_template':
                 warps = stackreg.to_updated_template(newframes, template, regfn=imgreg_dispatcher_[model], **model_params)
             elif stab_type in ['multi', 'multi-templates', 'pca-templates']:
-                templates, affs = fseq.frame_exemplars_pca_som(newframes,pcf=pcf)
+                templates, affs = fseq.frame_exemplars_pca_som(newframes,npc=len(fsm)//100+5)
                 warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],
                                               njobs=args.ncpu,                                              
                                               **model_params)
@@ -366,15 +405,16 @@ def stabilize_motion(fs, args,suff=''):
                 p4 = ui.Picker(fsc.stacks[morphology_channel])
             else:
                 p4 = ui.Picker(fseq.from_array(newframes))
-            clims = ui.harmonize_clims([p3,p4])
+            #clims = ui.harmonize_clims([p3,p4])
+            clims = [np.percentile(p3.frame_coll.stacks[0].data, (5,99.5))]
             p3.clims = clims
             p4.clims = clims
             pickers_list.extend([p3,p4])
 
-        ui.pickers_to_movie(pickers_list, fs.meta['file_path']+'-a-stabilization-%s.mp4'%suff,
+        ui.pickers_to_movie(pickers_list, nametag+'-a-stabilization-%s.mp4'%suff,
                             codec=args.codec, writer=args.writer,titles=('raw', 'stabilized'))
     
-    return fsc,warps # from stabilize_motion
+    return fsc, final_warps # from stabilize_motion
 
 
 def simple_rescale(m):
@@ -457,5 +497,8 @@ def animate_events(frames, ev_coll, args,
     anim.save(movie_name, writer=w)
 
 
+
+
 if __name__ == '__main__':
     main()
+    print('returned from main')

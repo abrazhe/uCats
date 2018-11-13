@@ -1,7 +1,7 @@
 {"stab_model": [["shifts", "multi-templates", {}]],
  "morphology_channel": 0,
  "ca_channel": 1,
- "save_denoised_dfof":1,
+ "save_denoised_dfof":0,
  "with_movies": 1,
  "suff":"astrocat001",
  "pca_denoise": 1,
