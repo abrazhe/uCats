@@ -327,9 +327,10 @@ def stabilize_motion(fs, args, nametag='',suff=None):
             print('Filtering data')
 
         # Median filter. TODO: make optional via arguments
-        fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
-        fsm_filtered = fseq.from_array(fsm[:])
-        fsm.frame_filters = []
+        #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
+        #fsm_filtered = fseq.from_array(fsm[:])
+        fsm_filtered = ndimage.median_filter(fsm[:], size=3)
+        #fsm.frame_filters = []
         if args.verbose > 1: print('done spatial median filter')
 
         
@@ -338,6 +339,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
             fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + pcf.mean_frame
             if args.verbose>1: print('done PCA-based denoising')
         else: pcf = None
+
+        fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
 
         # Additional smoothing and removing trend
         #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
@@ -379,16 +382,20 @@ def stabilize_motion(fs, args, nametag='',suff=None):
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
+        del warp_history
         # end else
     mx_warps = ucats.max_shifts(final_warps, args.verbose)
     fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
     fsc.meta['file_path']=fs.meta['file_path']
     fsc.meta['channel'] = fs.meta['channel']+'-sc'
+
+    
     if isinstance(fs,fseq.FStackColl):
         for stack in fsc.stacks:
             stack.data = ucats.crop_by_max_shift(stack.data,final_warps,mx_warps)
     else:
         fsc.data = ucats.crop_by_max_shift(fsc.data,final_warps,mx_warps)
+        
     if args.with_movies:
         p1 = ui.Picker(fs)
         p2 = ui.Picker(fsc)
