@@ -259,7 +259,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
         vhx = vhx.reshape(npc,len(vh[0]))
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:npc]
-        proj = ux@np.diag(s[:npc])@vh[:npc]
+        proj = ux@np.diag(s[:npc])@vhx[:npc]
         score = np.sum(s[:npc]**2)/np.sum(s**2)
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
@@ -1086,7 +1086,7 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
 
 
 
-def process_framestack(frames,min_area=16,verbose=False,
+def process_framestack(frames,min_area=12,verbose=False,
                        baseline_fn = multi_scale_simple_baseline,
                        baseline_kw = dict(smooth_levels=(10,20,40,80)),
                        pipeline=simple_pipeline_,
@@ -1114,6 +1114,13 @@ def process_framestack(frames,min_area=16,verbose=False,
     
     if verbose:
         print('detecting events')
+    ## todo: decide, whether we actually need the cleaning step.
+    ## another idea: use dfof for detection to avoid FP, use dfof_cleaned for reconstruction because of better SNR?
+    ##               but need to show that FP is lower, TP is OK and FN is low for this combo
+    ## motivation:   using filters in dfof_cleaned introduces spatial correlations, which may lead to higher FP
+    ##               (with low amplitude though). Alternative option would be to guess a correct amplitude threshold
+    ##               afterwards
+    ## note: but need to test that on real data, e.g. on slices with OGB and gcamp
     fsx = make_enh4(dfof_cleaned,nhood=2,kind='pca',pipeline=pipeline,labeler=labeler,labeler_kw=labeler_kw)
     coll_ = EventCollection(fsx.data,min_area=min_area)
     meta = fsx.meta
@@ -1158,8 +1165,10 @@ class EventCollection:
     def data_value(self,k,data,fn = np.max):
         o = self.objs[k]
         return fn(data[o][self.event_volume_mask(k)])
+    def to_DataFrame(self):
+        return pd.DataFrame(self.filtered_coll)
     def to_csv(self,name):
-        df = pd.DataFrame(self.filtered_coll)
+        df = self.to_DataFrame()
         df.to_csv(name)
     def to_filtered_array(self):
         sh  = self.labels.shape
