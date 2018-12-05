@@ -27,6 +27,7 @@ from scipy import ndimage
 # find it on github: https://github.com/abrazhe/image-funcut/tree/develop
 
 from imfun.filt.dctsplines import l1spline, l2spline, sp_decompose
+from imfun.filt.dctsplines import rolling_sd_scipy_nd
 from imfun import bwmorph
 
 from imfun import cluster
@@ -76,12 +77,18 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     #signals =  array([d[(slice(None),)+s].sum(-1).sum(-1)/prod(d[0][s].shape) for s in squares])
     #return [(v,sq,w) for v,sq in zip(signals, squares)]
 
+def weight_counts(collection,sh):
+    counts = np.zeros(sh)
+    for v,s,w in collection:
+        wx = w.reshape(counts[tuple(s)].shape)
+        counts[s] += wx
+    return counts
 
 
-def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
+def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
                                    pre_smooth=3,
-                                   dbscan_eps=0.05, dbscan_minpts=3, cluster_minsize=5,
-                                   walpha=10,
+                                   dbscan_eps_p=5, dbscan_minpts=3, cluster_minsize=5,
+                                   walpha=1.0,
                                    mask_of_interest=None):
     """
     Convert a TXY image stack to a list of signals taken from spatial windows and aggregated according to their coherence
@@ -92,53 +99,90 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=5, ncomp=2,
     mask = mask_of_interest
     counts = np.zeros(sh[1:])
     acc = []
-    knn_count = 0
-    cluster_count = 0
+    knn_count = [0]
+    cluster_count = [0]
     Ln = (2*nhood+1)**2
     corrfn=stats.pearsonr
     patch_size = (nhood*2+1)**2
     if cluster_minsize > patch_size:
         cluster_minsize = patch_size
+    #dbscan_eps_acc = []
+    def _process_loc(r,c):
+        kcenter = 2*nhood*(nhood+1)
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        patch = data[(slice(None),)+sl]
+        if not np.any(patch):
+            return
+        patch = patch.reshape(sh[0],-1).T
+        if pre_smooth > 1:
+            patch = ndimage.median_filter(patch, size=(pre_smooth,1))
+        Xc = patch.mean(0)
+        u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
+        points = u[:,:ncomp]
+        #dists = cluster.metrics.euclidean(points[kcenter],points)
+        all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
+        dists = all_dists[kcenter]
+
+        #np.mean(dists)
+        dbscan_eps = np.percentile(all_dists[all_dists>1e-6], dbscan_eps_p)
+        #dbscan_eps_acc.append(dbscan_eps)
+        #print(r,c,':', dbscan_eps)
+        _,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts, distances=all_dists)
+        similar = affs==affs[kcenter]
+
+        if sum(similar) < cluster_minsize or affs[kcenter]==-1:
+            knn_count[0] += 1
+            th = min(np.argsort(dists)[cluster_minsize],2*dbscan_eps)
+            similar = dists <= max(th, dists[kcenter])
+            #print('knn similar:', np.sum(similar))
+            #dists *= 2  # shrink weights if not from cluster                    
+        else:
+            cluster_count[0] +=1
+
+        weights = np.exp(-walpha*dists)
+        #weights = np.array([corrfn(a,v)[0] for a in patch])**2
+
+        #weights /= np.sum(weights)
+        #weights = ones(len(dists))
+        weights[~similar] = 0
+        #weights = np.array([corrfn(a,v)[0] for a in patch])
+
+        #weights /= np.sum(weights)
+        vx = patch[similar].mean(0) # DONE?: weighted aggregate
+                                    # TODO: check how weights are defined in NL-Bayes and BM3D
+                                    # TODO: project to PCs?
+        acc.append((vx, sl, weights))
+        return #  _process_loc
+        
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\r processing location %05d/%d '%(r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
-                v = data[:,r,c]
-                kcenter = 2*nhood*(nhood+1)
-                sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
-                patch = data[(slice(None),)+sl]
-                if not np.any(patch):
-                    continue
-                patch = patch.reshape(sh[0],-1).T
-                if pre_smooth > 1:
-                    patch = ndimage.median_filter(patch, size=(pre_smooth,1))
-                Xc = patch.mean(0)
-                #Xc =  0
-                u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
-                points = u[:,:ncomp]
-                _,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts)
-                similar = affs==affs[kcenter]
-                dists = cluster.metrics.euclidean(points[kcenter],points)
-                if sum(similar) < cluster_minsize or affs[kcenter]==-1:
-                    knn_count +=1
-                    th = np.argsort(dists)[cluster_minsize+1]
-                    similar = dists <= th
-                else:
-                    cluster_count +=1
-                weights = np.exp(-walpha*dists)
-                #weights = np.array([corrfn(a,v)[0] for a in patch])**2
-
-                #weights /= np.sum(weights)
-                #weights = ones(len(dists))
-                weights[~similar] = 0
-                #weights = np.array([corrfn(a,v)[0] for a in patch])
-
-                #weights /= np.sum(weights)
-                vx = patch[similar].mean(0) # DONE?: weighted aggregate
-                                            # TODO: check how weights are defined in NL-Bayes and BM3D
-                                            # TODO: project to PCs?
-                acc.append((vx, sl, weights))
-    return acc
+                _process_loc(r,c)
+                
+    sys.stderr.write('\n')
+    print('KNN:', knn_count[0])
+    print('cluster:',cluster_count[0])
+    m = weight_counts(acc, sh[1:])
+    #print('counted %d holes'%np.sum(m==0))
+    nholes = np.sum((m==0)*mask)
+    #print('N holes:', nholes)
+    #print('acc len before:', len(acc))
+    hole_i = 0
+    for r in range(nhood,sh[1]-nhood):
+        for c in range(nhood,sh[2]-nhood):
+            if mask[r,c] and (m[r,c] < 1e-6):
+                sys.stderr.write('\r processing additional location %05d/%05d '%(hole_i, nholes))
+                _process_loc(r,c)
+                #v = data[:,r,c]
+                #sl = (slice(r-1,r+1+1), slice(c-1,c+1+1))
+                #weights = np.zeros((3,3))
+                #weights[1,1] = 1.0
+                #acc.append((v, sl, weights.ravel()))
+                hole_i += 1
+    #print('acc len after:', len(acc))
+    #print('DBSCAN eps:', np.mean(dbscan_eps_acc), np.std(dbscan_eps_acc))
+    return acc 
 
 
 from scipy import stats
@@ -228,9 +272,10 @@ def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
                 out[:,r,c] = 0
     return out
 
+
 def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
-                       temporal_filter=3,
-                       spatial_filter=3,
+                       temporal_filter=1,
+                       spatial_filter=1,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -253,9 +298,10 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         ux = ndimage.median_filter(u[:,:npc],size=(temporal_filter,1))
-        vhx = np.array([ndimage.median_filter(f.reshape(w_sh[1:]),
-                                              size=(spatial_filter,spatial_filter))
-                        for f in vh[:npc]])
+        vh_images = vh[:npc].reshape(-1,*w_sh[1:])
+        vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        vhx_threshs = [mad_std(f) for f in vh_images]
+        vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         vhx = vhx.reshape(npc,len(vh[0]))
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:npc]
@@ -486,7 +532,7 @@ def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],
     return  l2spline(np.amin(b_estimates,0),np.mean(smooth_levels))
 
 
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=False):
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True):
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
@@ -764,6 +810,7 @@ multiscale_labeler_joint = make_labeler_commitee(multiscale_labeler_l1,
 from imfun import bwmorph
 
 
+
 def sp_rec_with_labels(vec, labels, 
                        min_scale=1.0,max_scale=50.,
                        with_plots=True,
@@ -791,19 +838,24 @@ def sp_rec_with_labels(vec, labels,
     vrec = smoother(vs*(vec1>0),min_scale,wmedian)
     
     for i in range(niters):
-        vec1 = vec1 - kgain*(vec1-vrec)
+        #vec1 = vec1 - kgain*(vec1-vrec) # how to use it?
         labs,nl = ndimage.label(weights)
         objs = ndimage.find_objects(labs)
-        for o in objs:
-            stop = o[0].stop
-            while stop < len(vec) and vrec[stop]>0.1:
-                weights[stop] = 1   
-                stop+=1
-        wer = ndimage.binary_erosion(weights)
-        weights = np.where((vec1<0.5), wer, weights)
-        vrec = smoother(vs*weights,min_scale)
+        #for o in objs:
+        #    stop = o[0].stop
+        #    while stop < len(vec) and vrec[stop]>0.25*vrec[o].max():
+        #        weights[stop] = 1   
+        #        stop+=1
+        wer_grow = ndimage.binary_dilation(weights)
+        wer_shrink = ndimage.binary_erosion(weights)
+        #weights = np.where((vec1<np.mean(vec1[vec1>0])), wer, weights)
+        if np.any(vrec>0):
+            weights = np.where(vrec<0.5*np.mean(vrec[vrec>0]), wer_shrink, weights)
+            weights = np.where(vrec>1.25*np.mean(vrec[vrec>0]), wer_grow, weights)        
+        vrec = smoother(vec*weights,min_scale,wmedian)
         #weights = ndimage.binary_opening(weights)
         vrec[vrec<0] = 0
+        #plt.figure(); plt.plot(vec1)
         #vrec[weights<0.5] *=0.5
         
     
@@ -820,7 +872,7 @@ def sp_rec_with_labels(vec, labels,
     if return_smoothed:
         return vrec
     else:
-        return weights*(vec>0)*vec
+        return vec*(vrec>0)*(vec>0)*weights #weights*(vrec>0)*vec
         
 
 def simple_pipeline_nojitter_(y,tau_label=1.5):
@@ -1056,7 +1108,10 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     if kind.lower()=='corr':
         coll = signals_from_array_correlation(frames,stride=stride,nhood=nhood,mask_of_interest=mask_of_interest)
     elif kind.lower()=='pca':
-        coll = signals_from_array_pca_cluster(frames,stride=stride,nhood=nhood,mask_of_interest=mask_of_interest)
+        coll = signals_from_array_pca_cluster(frames,stride=stride,nhood=nhood,
+                                              mask_of_interest=mask_of_interest,
+                                              ncomp=2,
+        )
     else:
         coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1,mask_of_interest=mask_of_interest)
     print('\nTime-signals, grouped,  processing (may take long time) ...')
@@ -1086,7 +1141,8 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
 
 
 
-def process_framestack(frames,min_area=12,verbose=False,
+def process_framestack(frames,min_area=9,verbose=False,
+                       do_dfof_denoising = True,
                        baseline_fn = multi_scale_simple_baseline,
                        baseline_kw = dict(smooth_levels=(10,20,40,80)),
                        pipeline=simple_pipeline_,
@@ -1106,11 +1162,12 @@ def process_framestack(frames,min_area=12,verbose=False,
 
     dfof= frames/fs_f0.data - 1
 
-    if verbose:
-        print('filtering ΔF/F0 data')
-    dfof_cleaned = patch_pca_denoise2(dfof, spatial_filter=5, npc=5)
-    fs_dfof = fseq.from_array(dfof_cleaned)
-    fs_dfof.meta['channel'] = 'ΔF_over_F0 filtered'
+    if do_dfof_denoising:
+        if verbose:
+            print('filtering ΔF/F0 data')
+        dfof = patch_pca_denoise2(dfof, spatial_filter=3, temporal_filter=1, npc=5)
+    fs_dfof = fseq.from_array(dfof)
+    fs_dfof.meta['channel'] = 'ΔF_over_F0'
     
     if verbose:
         print('detecting events')
@@ -1121,7 +1178,7 @@ def process_framestack(frames,min_area=12,verbose=False,
     ##               (with low amplitude though). Alternative option would be to guess a correct amplitude threshold
     ##               afterwards
     ## note: but need to test that on real data, e.g. on slices with OGB and gcamp
-    fsx = make_enh4(dfof_cleaned,nhood=2,kind='pca',pipeline=pipeline,labeler=labeler,labeler_kw=labeler_kw)
+    fsx = make_enh4(dfof,nhood=2,kind='pca',pipeline=pipeline,labeler=labeler,labeler_kw=labeler_kw)
     coll_ = EventCollection(fsx.data,min_area=min_area)
     meta = fsx.meta
     fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0),meta=meta)

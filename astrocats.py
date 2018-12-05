@@ -132,6 +132,11 @@ def main():
 
 import gc
 def process_lif_file(fname, args,min_frames=600):
+    ###
+    # pip install javabridge
+    # pip install python-bioformats
+    # conda install xmltodict
+    ###
     import io_lif
     print('------------------------------------------------------------------------------------------')
     print('Processing file',fname)
@@ -143,8 +148,10 @@ def process_lif_file(fname, args,min_frames=600):
             safename = rec.name.replace('/','_')
             fs = rec.load_timelapse(fname)
             fs.meta['file_path'] = fname
-            process_record(fs,fname,safename,args)
-
+            try:
+                process_record(fs,fname,safename,args)
+            except Exception as e_:
+                print("Coulnd't process %s because of "%safename, e_)
             del fs
             plt.close('all')
             gc.collect()
@@ -259,17 +266,24 @@ def process_record(fs, fname, series, args):
 
 def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
     name_low = name.lower()
+    read_as_array = True
     if endswith_any(name_low, ('.tif', '.tiff', '.lsm')):
         reader = tifffile
     elif endswith_any(name_low, ('.czi',)):
         reader = czifile
+    elif endswith_any(name_low, ('.mes',)):
+        reader = fseq.from_mes
+        read_as_array = False
     else:
         # todo: raise exception
         print("Can't find appropriate reader for input file format")
         return
 
-    frames = squeeze(reader.imread(name))
-    fs = fseq.from_array(frames)
+    if read_as_array:
+        frames = squeeze(reader.imread(name))
+        fs = fseq.from_array(frames)
+    else:
+        fs = reader(name)
     fs.meta['channel'] = channel_name
     fs.meta['file_path'] = name
 
@@ -318,36 +332,45 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     warps_name = '-'.join((nametag, suff, 'warps.npy'))
     fsm_filtered = None
     newframes = None
+
+    if args.verbose:
+        print('Filtering data')
+        
+    # Median filter. TODO: make optional via arguments
+    #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
+    #fsm_filtered = fseq.from_array(fsm[:])
+    fsm_filtered = ndimage.median_filter(fsm[:], size=3)
+
+    # Removing global trend
+    fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
+
+    
+    #fsm.frame_filters = []
+    if args.verbose > 1: print('done spatial median filter')
+
+        
+    if args.pca_denoise:
+        pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//50+5)
+        vh_frames = pcf.vh.reshape(-1, *pcf.sh)
+        smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
+        pcf.vh = array([[smooth_and_detrend(f) for f in vh_frames]]).reshape(pcf.vh.shape)
+        pcf.tsvd.components_ = pcf.vh
+        fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + smooth_and_detrend(pcf.mean_frame)
+        if args.verbose>1: print('done PCA-based denoising')
+    else: pcf = None
+
+    
+    #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
+    #fsm_filtered = fseq.from_array(fsm_filtered[:])
+    #if args.verbose>1: print('done flattening')
+    if args.verbose: print('Done filtering')
+
     if os.path.exists(warps_name):
         print('Loading pre-calculated movement correction:', warps_name)
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
     else:
         if args.verbose:
             print('No existing movement correction found, calculating...')            
-            print('Filtering data')
-
-        # Median filter. TODO: make optional via arguments
-        #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
-        #fsm_filtered = fseq.from_array(fsm[:])
-        fsm_filtered = ndimage.median_filter(fsm[:], size=3)
-        #fsm.frame_filters = []
-        if args.verbose > 1: print('done spatial median filter')
-
-        
-        if args.pca_denoise:
-            pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//100+5)
-            fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + pcf.mean_frame
-            if args.verbose>1: print('done PCA-based denoising')
-        else: pcf = None
-
-        fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
-
-        # Additional smoothing and removing trend
-        #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
-        #fsm_filtered = fseq.from_array(fsm_filtered[:])
-        #if args.verbose>1: print('done flattening')
-        if args.verbose: print('Done filtering')
-
         operations = args.stab_model
         warp_history = []
         newframes = fsm_filtered
@@ -396,25 +419,36 @@ def stabilize_motion(fs, args, nametag='',suff=None):
             stack.data = ucats.crop_by_max_shift(stack.data,final_warps,mx_warps)
     else:
         fsc.data = ucats.crop_by_max_shift(fsc.data,final_warps,mx_warps)
+
+    if isinstance(fs, fseq.FStackColl) and len(fs.stacks)>1:
+        stacks = [fs.stacks[morphology_channel], fs.stacks[args.ca_channel]]
+        stacks_c = [fsc.stacks[morphology_channel], fsc.stacks[args.ca_channel]]
+        
+        fs_show = fseq.FStackColl(stacks)
+        fsc_show = fseq.FStackColl(stacks_c)
+        
+    else:
+        fs_show = fs
+        fsc_show = fsc
+        
         
     if args.with_movies:
-        p1 = ui.Picker(fs)
-        p2 = ui.Picker(fsc)
+        p1 = ui.Picker(fs_show)
+        p2 = ui.Picker(fsc_show)
         clims = ui.harmonize_clims([p1,p2])
         p1.clims = clims
         p2.clims = clims
         pickers_list = [p1,p2]
         
-        if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1 or\
-           ((fsm_filtered is not None) and (newframes is not None)):
+        if (isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1) or (fsm_filtered is not None):
             if fsm_filtered is None:
                 p3 = ui.Picker(fs.stacks[morphology_channel])
+                newframes  = fsc.stacks[morphology_channel]
             else:
                 p3 = ui.Picker(fseq.from_array(fsm_filtered))
-            if newframes is None:
-                p4 = ui.Picker(fsc.stacks[morphology_channel])
-            else:
-                p4 = ui.Picker(fseq.from_array(newframes))
+                newframes = ofreg.warps.map_warps(final_warps, fsm_filtered)
+            #print('------------------------------- New frames:', newframes)
+            p4 = ui.Picker(fseq.from_array(newframes))
             #clims = ui.harmonize_clims([p3,p4])
             clims = [np.percentile(p3.frame_coll.stacks[0].data, (5,99.5))]
             p3.clims = clims
