@@ -61,7 +61,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     d = np.array(data).astype(_dtype_)
     acc = []
     squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
-    w = make_weighting_kern(patch_size)
+    w = make_weighting_kern(patch_size,2.5)
     w = w/w.sum()
     
     tslice = (slice(None),)
@@ -86,7 +86,7 @@ def weight_counts(collection,sh):
 
 
 def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
-                                   pre_smooth=3,
+                                   pre_smooth=5,
                                    dbscan_eps_p=5, dbscan_minpts=3, cluster_minsize=5,
                                    walpha=1.0,
                                    mask_of_interest=None):
@@ -114,6 +114,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
         if not np.any(patch):
             return
         patch = patch.reshape(sh[0],-1).T
+        patch0 = patch.copy()
         if pre_smooth > 1:
             patch = ndimage.median_filter(patch, size=(pre_smooth,1))
         Xc = patch.mean(0)
@@ -148,7 +149,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
         #weights = np.array([corrfn(a,v)[0] for a in patch])
 
         #weights /= np.sum(weights)
-        vx = patch[similar].mean(0) # DONE?: weighted aggregate
+        vx = patch0[similar].mean(0) # DONE?: weighted aggregate
                                     # TODO: check how weights are defined in NL-Bayes and BM3D
                                     # TODO: project to PCs?
         acc.append((vx, sl, weights))
@@ -516,8 +517,24 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     d = res-b
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
-def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
-    b = l2spline(ndimage.median_filter(y,plow),smooth)
+# def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
+#     b = l2spline(ndimage.median_filter(y,plow),smooth)
+#     if ns is None:
+#         ns = rolling_sd_pd(y)
+#     d = y-b
+#     b2 = b + np.median(d[d<th*ns])
+#     return b2
+
+
+# def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],ns=None):
+#     if ns is None:
+#         ns = rolling_sd_pd(y)
+#     b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
+#     return  l2spline(np.amin(b_estimates,0), np.mean(smooth_levels))
+
+def simple_baseline(y, plow=25, th=3,size=25, smooth=25,ns=None):
+    #b = l2spline(ndimage.median_filter(y,plow),smooth)
+    b = l2spline(ndimage.percentile_filter(y,plow,size),smooth)
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
@@ -525,14 +542,29 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     return b2
 
 
-def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],ns=None):
+def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [20,40,80,160],ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
-    return  l2spline(np.amin(b_estimates,0),np.mean(smooth_levels))
+    min_smooth = np.min(smooth_levels)
+    b_estimates = [simple_baseline(y,plow,th,smooth,min_smooth,ns) for smooth in smooth_levels]
+    baseline =  l2spline(np.amin(b_estimates,0), min_smooth)
+    #bias = estimate_bias(y-baseline, ns)
+    return baseline
 
 
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True):
+def estimate_bias(y,ns=None):
+    if not any(y):
+        return np.zeros_like(y)
+    if ns is None:
+        ns = rolling_sd_pd(y)
+    low = y < np.median(y) + 1.5*ns
+    if not any(low):
+        low = np.ones(len(y),np.bool)
+    bias = np.median(y[low])
+    return bias
+
+
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=False):
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
@@ -1024,7 +1056,8 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     pca_flip_signs(pcf)
     #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
     if smooth > 0:
-        base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+         #base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+        base_coords = np.array([smooth_fn(v) for v in pcf.coords.T]).T
     else:
         base_coords = pcf.coords
     #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
@@ -1044,8 +1077,8 @@ def get_baseline_frames(frames,smooth=60,npc=None,baseline_fn=multi_scale_simple
     (2) local corrections by patch-based algorithm
     """
     from imfun import fseq
-    base1 = calculate_baseline_pca(frames,smooth=smooth,npc=npc)
-    base2 = calculate_baseline(frames-base1, pipeline=baseline_fn, pipeline_kw=baseline_kw)
+    base1 = calculate_baseline_pca(frames,smooth=smooth,npc=npc,smooth_fn=multi_scale_simple_baseline)
+    base2 = calculate_baseline(frames-base1, pipeline=baseline_fn, pipeline_kw=baseline_kw,patch_size=5)
     fs_base = fseq.from_array(base1+base2)
     fs_base.meta['channel']='baseline_comb'
     return fs_base
@@ -1102,6 +1135,7 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
 def make_enh4(frames, pipeline=simple_pipeline_,
               labeler=percentile_label,
               kind='pca', nhood=5, stride=2, mask_of_interest=None,
+              pipeline_kw=None,
               labeler_kw=None):
     from imfun import fseq
     #coll = ucats.signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
@@ -1115,8 +1149,10 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     else:
         coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1,mask_of_interest=mask_of_interest)
     print('\nTime-signals, grouped,  processing (may take long time) ...')
-    coll_enh = process_signals_parallel(coll,pipeline=pipeline,
-                                        pipeline_kw=dict(labeler=labeler,labeler_kw=labeler_kw))
+    if pipeline_kw is None:
+        pipeline_kw = {}
+    pipeline_kw.update(labeler=labeler,labeler_kw=labeler_kw)
+    coll_enh = process_signals_parallel(coll,pipeline=pipeline, pipeline_kw=pipeline_kw)
     print('Time-signals processed, recombining to video...')
     out = combine_weighted_signals(coll_enh,frames.shape)
     fsx = fseq.from_array(out)

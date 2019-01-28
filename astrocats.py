@@ -67,7 +67,8 @@ def main():
         '-v': ('--verbose', dict(action='count', default=0, help='increment verbosity level')),
         '--morphology-channel': dict(default=0,type=int, help='color channel to use for motion correction (if several)'),
         '--ca-channel':dict(default=1, type=int, help='color channel with Ca-dependent fluorescence'),
-        '--with-movies': dict(action='store_true'),
+        '--with-motion-movies': dict(action='store_true'),
+        '--with-detection-movies': dict(action='store_true'),
         '--suff': dict(default='', help="optional suffix to append to saved registration recipe"),
         '--fps': dict(default=25,type=float,help='fps of exported movie'),
         '--pca-denoise': dict(action='store_true'),
@@ -77,6 +78,7 @@ def main():
         '--save-denoised-dfof': dict(action='store_true'),
         '--no-events': dict(action='store_true'),
         '--skip-existing': dict(action='store_true'),
+        '--no-skip-dark-areas':dict(action='store_false'),
         '--do-oscillations': dict(action='store_true'),
         '--detection-do-jitter':dict(default=0,type=bool,
                                         help='whether to use local jitter in detection algorithm;\
@@ -87,7 +89,9 @@ def main():
                                       help='smoothing in detection, make larger for less false positives,\
  make smaller for detection of smaller events'),
         '--detection-loc-nhood':dict(default=2,type=int),
+        '--detection-smoothed-reconstruction':dict(default=1,type=bool),
         '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
+        '--signal-patch-denoise-temporal-size':dict(default=1,type=int),        
         '--signal-patch-denoise-npc':dict(default=5,type=int),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-peak-threshold':dict(default=0.1, type=float,help='event must contain a peak with at least this ΔF/F value'),
@@ -103,6 +107,7 @@ def main():
             parser.add_argument(arg, kw[0], **kw[1])
 
     args = parser.parse_args()
+
 
     if args.stab_model is None:
         args.stab_model = ['msclg']
@@ -168,6 +173,8 @@ def process_record(fs, fname, series, args):
         fsc = fsc.stacks[args.ca_channel]
 
 
+    if args.no_events:
+        return
     
     
     # III. Calculate baseline
@@ -177,7 +184,12 @@ def process_record(fs, fname, series, args):
     benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
     h5f = None
     detected_name = nametag+'-detected.h5'
-    colored_mask = dark_area_mask(benh.data.mean(0))
+    if args.no_skip_dark_areas:
+        print('calculating well-stained and poorly-stained areas')
+        colored_mask = dark_area_mask(benh.data.mean(0))
+    else:
+        print('no color mask asked for')
+        colored_mask = np.ones(benh.frame_shape, np.bool)
 
     f,ax = plt.subplots(1,1,figsize=(8,8));
     ax.imshow(benh.data.mean(0),cmap='gray')
@@ -187,8 +199,6 @@ def process_record(fs, fname, series, args):
     plt.close(f)
 
     
-    if args.no_events:
-        return
     # IV. Process data
     if os.path.exists(detected_name):
         print('loading existing results of event detection:', detected_name)
@@ -199,6 +209,7 @@ def process_record(fs, fname, series, args):
         print(' - denoising ΔF/F frames')
         dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
                                                 npc=args.signal_patch_denoise_npc,
+                                                temporal_filter=args.signal_patch_denoise_temporal_size,
                                                 spatial_filter=args.signal_patch_denoise_spatial_size,
                                                 mask_of_interest=colored_mask)
         if args.save_denoised_dfof:
@@ -207,11 +218,13 @@ def process_record(fs, fname, series, args):
             fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
         print(' - Detecting and cleaning up events...')
 
+        pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction)
         labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
         labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
 
         fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
                               labeler = labeler,
+                              pipeline_kw=pipeline_kwargs,
                               labeler_kw=labeler_kwargs,
                               mask_of_interest=colored_mask)
         
@@ -272,6 +285,7 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
     elif endswith_any(name_low, ('.czi',)):
         reader = czifile
     elif endswith_any(name_low, ('.mes',)):
+
         reader = fseq.from_mes
         read_as_array = False
     else:
@@ -315,6 +329,19 @@ imgreg_dispatcher_ = {'affine':imgreg.affine,
                       'mslkp':imgreg.mslkp,
                       'msclg':imgreg.msclg}
 
+def apply_warps_and_crop(fs, warps, verbose, njobs):
+    mx_warps = ucats.max_shifts(warps, verbose)
+    fsc = ofreg.warps.map_warps(warps, fs, njobs=njobs)
+    fsc.meta['file_path']=fs.meta['file_path']
+    fsc.meta['channel'] = fs.meta['channel']+'-sc'
+
+    if isinstance(fs,fseq.FStackColl):
+        for stack in fsc.stacks:
+            stack.data = ucats.crop_by_max_shift(stack.data,warps,mx_warps)
+    else:
+        fsc.data = ucats.crop_by_max_shift(fsc.data,warps,mx_warps)
+    return fsc
+
 
 def stabilize_motion(fs, args, nametag='',suff=None):
     "Try to remove motion artifacts by image registratio"
@@ -330,8 +357,16 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     #warps_name = fs.meta['file_path']+suff+'.npy'
     #warps_name = nametag+suff+'-warps.npy'
     warps_name = '-'.join((nametag, suff, 'warps.npy'))
+    print('warps name:', warps_name)
     fsm_filtered = None
     newframes = None
+    
+    if os.path.exists(warps_name) and (not args.with_motion_movies):        
+        final_warps = ofreg.warps.from_dct_encoded(warps_name)
+        fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
+        return fsc, final_warps
+    
+    
 
     if args.verbose:
         print('Filtering data')
@@ -408,17 +443,13 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         del warp_history, final_warps
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
         # end else
-    mx_warps = ucats.max_shifts(final_warps, args.verbose)
-    fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
-    fsc.meta['file_path']=fs.meta['file_path']
-    fsc.meta['channel'] = fs.meta['channel']+'-sc'
 
-    
-    if isinstance(fs,fseq.FStackColl):
-        for stack in fsc.stacks:
-            stack.data = ucats.crop_by_max_shift(stack.data,final_warps,mx_warps)
-    else:
-        fsc.data = ucats.crop_by_max_shift(fsc.data,final_warps,mx_warps)
+    #mx_warps = ucats.max_shifts(final_warps, args.verbose)
+    #fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
+    #fsc.meta['file_path']=fs.meta['file_path']
+    #fsc.meta['channel'] = fs.meta['channel']+'-sc'
+
+    fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
 
     if isinstance(fs, fseq.FStackColl) and len(fs.stacks)>1:
         stacks = [fs.stacks[morphology_channel], fs.stacks[args.ca_channel]]
@@ -432,7 +463,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         fsc_show = fsc
         
         
-    if args.with_movies:
+    if args.with_motion_movies:
         p1 = ui.Picker(fs_show)
         p2 = ui.Picker(fsc_show)
         clims = ui.harmonize_clims([p1,p2])
@@ -484,8 +515,8 @@ def remove_small_regions(mask, min_size=200):
     return labels > 0
 
 from scipy.ndimage import binary_fill_holes, binary_closing, binary_opening
-def dark_area_mask(mf):
-    mask = mf > np.percentile(mf,99.5)*0.1
+def dark_area_mask(mf,phigh=99.5, th_scale=0.1):
+    mask = mf > np.percentile(mf,phigh)*th_scale
     #return binary_fill_holes(remove_small_regions(binary_opening(binary_closing(mask))))
     return remove_small_regions(binary_opening(binary_closing(mask)))
 
