@@ -86,7 +86,7 @@ def main():
         '--detection-tau-smooth':dict(default=2., type=float,
                                       help='smoothing in detection, make larger for less false positives,\
  make smaller for detection of smaller events'),
-        '--detection-loc-nhood':dict(default=2,type=int),
+        '--detection-loc-nhood':dict(default=3,type=int),
         '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
         '--signal-patch-denoise-npc':dict(default=5,type=int),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
@@ -167,8 +167,8 @@ def process_record(fs, fname, series, args):
     if isinstance(fsc, fseq.FStackColl) and len(fsc.stacks) > 1:
         fsc = fsc.stacks[args.ca_channel]
 
-
-    
+    #seems like no good?
+    fsc.data = ucats.adaptive_median_filter_frames(fsc.data,)
     
     # III. Calculate baseline
     print('Calculating dynamic fluorescence baseline for motion-corrected data')

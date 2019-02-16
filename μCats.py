@@ -63,12 +63,15 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
     w = make_weighting_kern(patch_size)
     w = w/w.sum()
+    #print('w.shape:', w.shape)
+    #print(np.argmax(w.reshape(1,-1)))
     
     tslice = (slice(None),)
     for sq in squares:
         patch = d[tslice+sq]
         sh = patch.shape
         wclip = w[:sh[1],:sh[2]]
+        #print(np.argmax(wclip))
         #print(w.shape, sh[1:3], wclip.shape)
         #wclip /= sum(wclip)
         signal = (patch*wclip).sum(axis=(1,2))
@@ -86,8 +89,8 @@ def weight_counts(collection,sh):
 
 
 def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
-                                   pre_smooth=3,
-                                   dbscan_eps_p=5, dbscan_minpts=3, cluster_minsize=5,
+                                   pre_smooth=1,
+                                   dbscan_eps_p=10, dbscan_minpts=3, cluster_minsize=5,
                                    walpha=1.0,
                                    mask_of_interest=None):
     """
@@ -123,8 +126,10 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
         all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
         dists = all_dists[kcenter]
 
+        max_same = np.max(np.diag(all_dists))
+
         #np.mean(dists)
-        dbscan_eps = np.percentile(all_dists[all_dists>1e-6], dbscan_eps_p)
+        dbscan_eps = np.percentile(all_dists[all_dists>max_same], dbscan_eps_p)
         #dbscan_eps_acc.append(dbscan_eps)
         #print(r,c,':', dbscan_eps)
         _,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts, distances=all_dists)
@@ -132,9 +137,10 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
 
         if sum(similar) < cluster_minsize or affs[kcenter]==-1:
             knn_count[0] += 1
-            th = min(np.argsort(dists)[cluster_minsize],2*dbscan_eps)
-            similar = dists <= max(th, dists[kcenter])
-            #print('knn similar:', np.sum(similar))
+            #th = min(np.argsort(dists)[cluster_minsize+1],2*dbscan_eps)
+            th = dists[np.argsort(dists)[min(len(dists), cluster_minsize*2)]]
+            similar = dists <= max(th, max_same)
+            #print('knn similar:', np.sum(similar), 'total signals:', len(similar))
             #dists *= 2  # shrink weights if not from cluster                    
         else:
             cluster_count[0] +=1
@@ -322,6 +328,112 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
             if counts[r,c] == 0:
                 out[:,r,c] = 0
     return out
+
+
+from fastdtw import fastdtw
+from imfun import core
+
+def apply_warp_path(v, path):
+    path = np.array(path)
+    return np.interp(np.arange(len(v)), path[:,0], v[path[:,1]])
+
+def interpolate_path(path,L):
+    return np.interp(np.arange(L), path[:,0],path[:,1])
+
+def omega_approx(beta):
+    return 0.56*beta**3 - 0.95*beta**2 + 1.82*beta + 1.43
+
+def svht(sv, sh):
+    m,n = sh
+    if m>n: 
+        m,n=n,m
+    omg = omega_approx(m/n)
+    return omg*np.median(sv)
+
+def min_ncomp(sv,sh):
+    th = svht(sv,sh)
+    return sum(sv >=th)
+
+def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
+                                    temporal_filter=1,
+                                    spatial_filter=1,
+                                    mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        kcenter = 2*nhood*(nhood+1)
+        
+        patch = data[tsl]
+        w_sh = patch.shape
+        patch = patch.reshape(sh[0],-1)
+        # (patch is now Nframes x Npixels, u will hold temporal components)
+
+        signals = patch.T
+
+        vcentral = signals[kcenter]
+        dtw_warps = [np.array(fastdtw(vcentral, v)[1]) for v in signals]
+
+        #dtw_warps_smoothed = [ for p in dtw_path]
+        paths_interp = np.array([interpolate_path(p,L) for p in dtw_warps])
+        paths_interp_dual = np.array([interpolate_path(np.fliplr(p),L) for p in dtw_warps])
+
+        paths_interp_smooth = [np.clip(l2spline(ip,5).astype(int),0,L-1) for ip in paths_interp]
+        paths_interp_dual_smooth = [np.clip(l2spline(ip,5).astype(int),0,L-1) for ip in paths_interp_dual]
+        
+        aligned = np.array([v[ip] for v,ip in zip(signals, paths_interp_smooth)])
+
+        u,s,vh = np.linalg.svd(aligned.T,False)
+        #u,s,vh = np.linalg.svd(patch,full_matrices=False)
+        if temporal_filter>1:
+            ux = ndimage.median_filter(u[:,:npc],size=(temporal_filter,1))
+        else:
+            ux = u[:,:npc]
+
+        #points = vh[:npc].T
+        #all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
+        #dists = all_dists[kcenter]
+        
+        vh_images = vh[:npc].reshape(-1,*w_sh[1:])
+        vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        vhx_threshs = [mad_std(f) for f in vh_images]
+        vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        vhx = vhx.reshape(npc,len(vh[0]))
+        #print('\n', patch.shape, u.shape, vh.shape)
+        #ux = u[:,:npc]
+        proj_w = ux@np.diag(s[:npc])@vhx[:npc]
+        score = np.sum(s[:npc]**2)/np.sum(s**2)
+
+        proj = np.array([v[ip] for v,ip in zip(proj_w.T,paths_interp_dual_smooth)]).T
+        
+        #score = 1
+        out[tsl] += score*proj.reshape(w_sh)
+        counts[sl] += score
+        
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/(1e-12+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out[:,r,c] = 0
+    return out
+
 
 
 def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
@@ -529,7 +641,7 @@ def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],
     if ns is None:
         ns = rolling_sd_pd(y)
     b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
-    return  l2spline(np.amin(b_estimates,0),np.mean(smooth_levels))
+    return  l2spline(np.amin(b_estimates,0),np.min(smooth_levels))
 
 
 def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True):
@@ -601,10 +713,17 @@ def std_median(v):
     md = np.median(v)
     return (np.sum((v-md)**2)/N)**0.5
 
-def mad_std(v):
-    mad = np.median(abs(v-np.median(v)))
+def mad_std(v,axis=None):
+    mad = np.median(abs(v-np.median(v,axis=axis)),axis=axis)
     return mad*1.4826
 
+
+def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
+    medfilt = ndimage.median_filter(frames, [tsmooth,ssmooth,ssmooth])
+    details = frames - medfilt
+    mdmap = np.median(details, axis=0)
+    sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
+    return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:
