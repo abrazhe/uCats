@@ -323,6 +323,110 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
                 out[:,r,c] = 0
     return out
 
+from skimage.feature import register_translation
+from skimage import transform as skt
+from imfun import core
+
+def shift_signal(v, shift):
+    t = skt.SimilarityTransform(translation=(shift,0))
+    return skt.warp(v.reshape(1,-1),t,mode='wrap').ravel()
+
+
+def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
+                                   temporal_filter=1,
+                                   spatial_filter=1,
+                                   mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+
+    #preproc = lambda y: core.rescale(y)
+
+    #tmp_signals = np.zeros()
+    tv = np.arange(L)
+
+    def _shift_signal_i(v, shift):
+        return v[((tv+shift)%L).astype(np.int)]
+
+    
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        kcenter = 2*nhood*(nhood+1)
+        
+        patch = data[tsl]
+        w_sh = patch.shape
+        signals = patch.reshape(sh[0],-1).T
+
+        vcenter = signals[kcenter]
+        shifts = [register_translation(v,vcenter)[0][0] for v in signals]
+        
+        vecs_shifted_to_center = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
+        #vecs_shifted_to_center = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
+        corrs_shifted = np.corrcoef(vecs_shifted_to_center)[0]
+        coherent_mask = corrs_shifted > 0.3
+
+        u0,s0,vh0 = np.linalg.svd(vecs_shifted_to_center,full_matrices=False)
+        u,s,vh = np.linalg.svd(vecs_shifted_to_center[coherent_mask],False)
+
+        if temporal_filter > 1:
+            vhx = ndimage.median_filter(vh[:npc],size=(1,temporal_filter))
+            vhx0 = ndimage.median_filter(vh0[:npc],size=(1,temporal_filter))
+        else:
+            vhx = vh[:npc]
+            vhx0 = vh0[:npc]            
+        #if spatial_filter > 1:
+        #    vh_images = vh[:npc].reshape(-1,*w_sh[1:])
+        #    vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        #    vhx_threshs = [mad_std(f) for f in vh_images]
+        #    vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        #    vhx = vhx.reshape(npc,len(vh[0]))
+        #else:
+        #vhx = vh[:npc]
+        ux = u[:,:npc]
+        ux0 = u0[:,:npc]
+
+        #print('\n', patch.shape, u.shape, vh.shape)
+        #ux = u[:,:npc]
+        proj0 = ux0@np.diag(s0[:npc])@vhx0
+        
+        recs = (vecs_shifted_to_center@vh[:npc].T)@vh[:npc]
+                
+        score = np.sum(s[:npc]**2)/np.sum(s**2)
+
+        recs = np.where(coherent_mask[:,None], recs, proj0)
+        #print(recs.shape)
+
+        recs_unshifted = np.array([_shift_signal_i(v,-p) for v,p in zip(recs,shifts)])
+        proj = recs_unshifted.T
+        
+        #score = 1
+        out[tsl] += score*proj.reshape(w_sh)
+        counts[sl] += score
+        
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/(1e-12+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out[:,r,c] = 0
+    return out
+
+
 
 def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
     sh = data.shape
@@ -517,7 +621,7 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
 def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
-    b = l2spline(ndimage.median_filter(y,plow),smooth)
+    b = l2spline(ndimage.percentile_filter(y,plow,smooth),smooth*0.5)
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
@@ -525,11 +629,13 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     return b2
 
 
-def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels = [10,20,40,80],ns=None):
+def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80], ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
-    return  l2spline(np.amin(b_estimates,0),np.mean(smooth_levels))
+    low_env = np.amin(b_estimates, axis=0)
+    low_env = np.where(low_env < np.min(y), np.min(y), low_env)
+    return  l2spline(low_env, np.min(smooth_levels))
 
 
 def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True):
@@ -1025,6 +1131,7 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
     if smooth > 0:
         base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+        #base_coords = np.array([multi_scale_simple_baseline(v) for v in pcf.coords.T]).T
     else:
         base_coords = pcf.coords
     #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
@@ -1036,6 +1143,37 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     fs_base = fseq.from_array(baseline_frames)
     fs_base.meta['channel'] = 'baseline_pca'
     return fs_base
+
+## TODO use NMF or NNDSVD instead of PCA?
+from sklearn import decomposition as skd
+from imfun import core
+def _calculate_baseline_nmf(frames, ncomp=None, return_type='array',smooth_fn=multi_scale_simple_baseline):
+    """DOESNT WORK! Use smoothed NMF components to estimate time-varying baseline fluorescence F0"""
+    from imfun import fseq
+
+    fsh = frames[0].shape
+
+    if ncomp is None:
+        ncomp = len(frames)//20
+    nmfx = skd.NMF(ncomp,)
+    signals = nmfx.fit_transform(core.ah.ravel_frames(frames))
+    
+    #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
+    if smooth > 0:
+        base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
+        #base_coords = np.array([multi_scale_simple_baseline for v in pcf.coords.T]).T
+    else:
+        base_coords = pcf.coords
+    #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
+    #base_coords = np.array([simple_get_baselines(v) for v in pcf.coords.T]).T
+    baseline_frames = pcf.tsvd.inverse_transform(base_coords).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
+    if return_type.lower() == 'array':
+        return baseline_frames
+    #baseline_frames = base_coords.dot(pcf.vh).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
+    fs_base = fseq.from_array(baseline_frames)
+    fs_base.meta['channel'] = 'baseline_pca'
+    return fs_base
+
 
 def get_baseline_frames(frames,smooth=60,npc=None,baseline_fn=multi_scale_simple_baseline,baseline_kw=None):
     """
