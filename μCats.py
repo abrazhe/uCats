@@ -51,10 +51,6 @@ def make_weighting_kern(size,sigma=1.5):
     return g
 
 
-def smoothed_medianf(v,smooth=10,wmedian=10):
-    "Robust smoothing by first applying median filter and then applying L2-spline filter" 
-    return l2spline(ndimage.median_filter(v, wmedian),smooth)
-
 
 def signals_from_array_avg(data, stride=2, patch_size=5):
     """Convert a TXY image stack to a list of temporal signals (taken from small spatial windows/patches)"""  
@@ -608,7 +604,7 @@ def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
         rec_minus = -process_signal(-y,k=3,rec_variant=1)
         rec=rec+rec_minus
     res = y-rec
-    b = l2spline(ndimage.percentile_filter(res,plow,smooth_level),smooth_level/4)
+    b = l2spline(ndimage.percentile_filter(res,plow,smooth_level),smooth_level/2)
     rsd = rolling_sd_pd(res-b)
     return b,rsd,res
 
@@ -620,21 +616,31 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     d = res-b
     return b + np.median(d[d<th*ns]) # + bias as constant shift
 
+
+def smoothed_medianf(v,smooth=10,wmedian=10):
+    "Robust smoothing by first applying median filter and then applying L2-spline filter" 
+    return l2spline(ndimage.median_filter(v, wmedian),smooth)
+
 def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
-    b = l2spline(ndimage.percentile_filter(y,plow,smooth),smooth*0.5)
+    b = l2spline(ndimage.percentile_filter(y,plow,smooth),smooth/5)
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
-    b2 = b + np.median(d[d<th*ns])
+    b2 = b + np.median(d[d<th*ns]) # correct scalar shift 
     return b2
 
 
-def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80], ns=None):
+def find_bias(y, th=3, ns=None):
+    if ns is None:
+        ns = rolling_sd_pd(y)
+    return np.median(y[y<th*ns])
+
+def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160], ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
     low_env = np.amin(b_estimates, axis=0)
-    low_env = np.where(low_env < np.min(y), np.min(y), low_env)
+    low_env = np.clip(low_env,np.min(y), np.max(y))
     return  l2spline(low_env, np.min(smooth_levels))
 
 
@@ -707,9 +713,18 @@ def std_median(v):
     md = np.median(v)
     return (np.sum((v-md)**2)/N)**0.5
 
-def mad_std(v):
-    mad = np.median(abs(v-np.median(v)))
+def mad_std(v,axis=None):
+    mad = np.median(abs(v-np.median(v,axis=axis)),axis=axis)
     return mad*1.4826
+
+
+def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
+    medfilt = ndimage.median_filter(frames, [tsmooth,ssmooth,ssmooth])
+    details = frames - medfilt
+    mdmap = np.median(details, axis=0)
+    sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
+    return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
+
 
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
@@ -1119,8 +1134,25 @@ def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,pat
     return fsx
 
 
+def omega_approx(beta):
+    return 0.56*beta**3 - 0.95*beta**2 + 1.82*beta + 1.43
+
+def svht(sv, sh):
+    m,n = sh
+    if m>n: 
+        m,n=n,m
+    omg = omega_approx(m/n)
+    return omg*np.median(sv)
+
+def min_ncomp(sv,sh):
+    th = svht(sv,sh)
+    return sum(sv >=th)
+
+
 def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array',smooth_fn=baseline_als_spl):
-    """Use smoothed principal components to estimate time-varying baseline fluorescence F0"""
+    """Use smoothed principal components to estimate time-varying baseline fluorescence F0
+    -- deprecated
+"""
     from imfun import fseq
 
     if pcf is None:
@@ -1143,6 +1175,46 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     fs_base = fseq.from_array(baseline_frames)
     fs_base.meta['channel'] = 'baseline_pca'
     return fs_base
+
+def find_bias_frames(frames, th, ns):
+    signals = core.ah.ravel_frames(frames).T
+    nsr = np.ravel(ns)
+    #print(nsr.shape, signals.shape)
+    biases = np.array([find_bias(v,th,ns_) for  v,ns_ in zip(signals, nsr)])
+    return biases.reshape(frames[0].shape)
+
+
+def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbose=False):
+    """Use asymetrically smoothed principal components to estimate time-varying baseline fluorescence F0"""
+    frames_w = np.copy(frames)
+    sh = frames.shape
+    nbase = np.linalg.norm(frames)
+    diff_prev = np.linalg.norm(frames_w)/nbase
+    for i in range(niter+1):
+        pcf = components.pca.PCA_frames(frames_w, npc=ncomp)
+        coefs = np.array([l2spline(v,smooth) for v in pcf.coords.T]).T
+        rec = pcf.inverse_transform(coefs)
+        diff_new = np.linalg.norm(frames_w - rec)/nbase
+        epsx = diff_new-diff_prev
+        diff_prev = diff_new
+            
+        if not i%5:
+            if verbose:
+                sys.stdout.write('%0.1f %% | '%(100*i/niter))
+                print('explained variance %:', 100*pcf.tsvd.explained_variance_ratio_.sum(), 'update: ', epsx)
+        if i < niter:
+            delta=frames_w-rec
+            thv = th*np.std(delta,axis=0)
+            frames_w = np.where(delta>thv, rec, frames_w)
+        else:
+            if verbose:
+                print('\n finished iterations')
+            delta = frames-rec
+            ns0 = np.median(np.abs(delta - np.median(delta,axis=0)), axis=0)*1.4826
+            biases = find_bias_frames(delta,3,ns0)
+            frames_w = rec + biases#np.array([ucats.find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
+            
+    return frames_w
 
 ## TODO use NMF or NNDSVD instead of PCA?
 from sklearn import decomposition as skd
