@@ -359,7 +359,6 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
 
     def _shift_signal_i(v, shift):
         return v[((tv+shift)%L).astype(np.int)]
-
     
     def _process_loc(r,c):
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
@@ -371,9 +370,9 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         signals = patch.reshape(sh[0],-1).T
 
         signals_ft = np.fft.fft(signals, axis=1)
-        #kcenter = 2*nhood*(nhood+1)
+        kcenter = 2*nhood*(nhood+1)
         # todo : use MAD estimate of std or other
-        kcenter = np.argmax(np.std(signals,axis=1))
+        #kcenter = np.argmax(np.std(signals,axis=1))
 
 
         vcenter = signals[kcenter]
@@ -382,23 +381,23 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         shifts = np.array([_register_shift_1d(vcenter_ft,v) for v in signals_ft])
         shifts = shifts*(np.abs(shifts) < max_shift)
         
-        vecs_shifted_to_center = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
-        #vecs_shifted_to_center = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
-        corrs_shifted = np.corrcoef(vecs_shifted_to_center)[kcenter]
+        vecs_shifted = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
+        #vecs_shifted = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
+        corrs_shifted = np.corrcoef(vecs_shifted)[kcenter]
         coherent_mask = corrs_shifted > 0.33
         #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
-        u0,s0,vh0 = np.linalg.svd(vecs_shifted_to_center,full_matrices=False)
+        u0,s0,vh0 = np.linalg.svd(vecs_shifted,full_matrices=False)
         vhx0 = ndimage.median_filter(vh0[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh0[:npc]
         ux0 = u0[:,:npc]
         recs = ux0@np.diag(s0[:npc])@vhx0
         score = np.sum(s0[:npc]**2)/np.sum(s0**2)*np.ones(len(signals))
         
         if np.sum(coherent_mask) > npc:
-            u,s,vh = np.linalg.svd(vecs_shifted_to_center[coherent_mask],False)
+            u,s,vh = np.linalg.svd(vecs_shifted[coherent_mask],False)
             vhx = ndimage.median_filter(vh[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:npc]
             ux = u[:,:npc]
-            recs_coh = (vecs_shifted_to_center@vh[:npc].T)@vh[:npc]
+            recs_coh = (vecs_shifted@vh[:npc].T)@vh[:npc]
             score_coh = np.sum(s[:npc]**2)/np.sum(s**2)
             recs = np.where(coherent_mask[:,None], recs_coh, recs)
             score[coherent_mask] = score_coh
@@ -634,7 +633,7 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
 def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    return np.median(y[y<th*ns])
+    return np.median(y[y<np.median(y)+th*ns])
 
 def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160], ns=None):
     if ns is None:
