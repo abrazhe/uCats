@@ -337,6 +337,7 @@ def _register_shift_1d(target,source):
 def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
                                    temporal_filter=1,
                                    spatial_filter=1,
+                                   max_shift = 10,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -378,12 +379,13 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         vcenter = signals[kcenter]
         vcenter_ft = signals_ft[kcenter]
         #shifts = [register_translation(v,vcenter)[0][0] for v in signals]
-        shifts = [_register_shift_1d(vcenter_ft,v) for v in signals_ft]
+        shifts = np.array([_register_shift_1d(vcenter_ft,v) for v in signals_ft])
+        shifts = shifts*(np.abs(shifts) < max_shift)
         
         vecs_shifted_to_center = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
         #vecs_shifted_to_center = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
         corrs_shifted = np.corrcoef(vecs_shifted_to_center)[kcenter]
-        coherent_mask = corrs_shifted > 0.3
+        coherent_mask = corrs_shifted > 0.33
         #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
         u0,s0,vh0 = np.linalg.svd(vecs_shifted_to_center,full_matrices=False)
