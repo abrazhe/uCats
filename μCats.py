@@ -327,6 +327,12 @@ def shift_signal(v, shift):
     t = skt.SimilarityTransform(translation=(shift,0))
     return skt.warp(v.reshape(1,-1),t,mode='wrap').ravel()
 
+def _register_shift_1d(target,source):
+    'find translation in 1d signals (assumes input is in Fourier domain)'
+    z = np.fft.ifft(target*source.conj()).real
+    L = len(target)
+    k1 = np.argmax(z)
+    return -k1 if k1 < L/2 else (L-k1)
 
 def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
                                    temporal_filter=1,
@@ -358,54 +364,47 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
         tsl = (slice(None),)+sl
 
-        kcenter = 2*nhood*(nhood+1)
         
         patch = data[tsl]
         w_sh = patch.shape
         signals = patch.reshape(sh[0],-1).T
 
+        signals_ft = np.fft.fft(signals, axis=1)
+        #kcenter = 2*nhood*(nhood+1)
+        # todo : use MAD estimate of std or other
+        kcenter = np.argmax(np.std(signals,axis=1))
+
+
         vcenter = signals[kcenter]
-        shifts = [register_translation(v,vcenter)[0][0] for v in signals]
+        vcenter_ft = signals_ft[kcenter]
+        #shifts = [register_translation(v,vcenter)[0][0] for v in signals]
+        shifts = [_register_shift_1d(vcenter_ft,v) for v in signals_ft]
         
         vecs_shifted_to_center = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
         #vecs_shifted_to_center = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
-        corrs_shifted = np.corrcoef(vecs_shifted_to_center)[0]
+        corrs_shifted = np.corrcoef(vecs_shifted_to_center)[kcenter]
         coherent_mask = corrs_shifted > 0.3
+        #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
         u0,s0,vh0 = np.linalg.svd(vecs_shifted_to_center,full_matrices=False)
-        u,s,vh = np.linalg.svd(vecs_shifted_to_center[coherent_mask],False)
-
-        if temporal_filter > 1:
-            vhx = ndimage.median_filter(vh[:npc],size=(1,temporal_filter))
-            vhx0 = ndimage.median_filter(vh0[:npc],size=(1,temporal_filter))
-        else:
-            vhx = vh[:npc]
-            vhx0 = vh0[:npc]            
-        #if spatial_filter > 1:
-        #    vh_images = vh[:npc].reshape(-1,*w_sh[1:])
-        #    vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
-        #    vhx_threshs = [mad_std(f) for f in vh_images]
-        #    vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
-        #    vhx = vhx.reshape(npc,len(vh[0]))
-        #else:
-        #vhx = vh[:npc]
-        ux = u[:,:npc]
+        vhx0 = ndimage.median_filter(vh0[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh0[:npc]
         ux0 = u0[:,:npc]
-
-        #print('\n', patch.shape, u.shape, vh.shape)
-        #ux = u[:,:npc]
-        proj0 = ux0@np.diag(s0[:npc])@vhx0
+        recs = ux0@np.diag(s0[:npc])@vhx0
+        score = np.sum(s0[:npc]**2)/np.sum(s0**2)*np.ones(len(signals))
         
-        recs = (vecs_shifted_to_center@vh[:npc].T)@vh[:npc]
-                
-        score = np.sum(s[:npc]**2)/np.sum(s**2)
-
-        recs = np.where(coherent_mask[:,None], recs, proj0)
-        #print(recs.shape)
-
+        if np.sum(coherent_mask) > npc:
+            u,s,vh = np.linalg.svd(vecs_shifted_to_center[coherent_mask],False)
+            vhx = ndimage.median_filter(vh[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:npc]
+            ux = u[:,:npc]
+            recs_coh = (vecs_shifted_to_center@vh[:npc].T)@vh[:npc]
+            score_coh = np.sum(s[:npc]**2)/np.sum(s**2)
+            recs = np.where(coherent_mask[:,None], recs_coh, recs)
+            score[coherent_mask] = score_coh
+            
         recs_unshifted = np.array([_shift_signal_i(v,-p) for v,p in zip(recs,shifts)])
         proj = recs_unshifted.T
-        
+
+        score = score.reshape(w_sh[1:])
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
         counts[sl] += score
