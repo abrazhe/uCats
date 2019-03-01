@@ -291,6 +291,10 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
         patch = data[tsl]
         w_sh = patch.shape
         patch = patch.reshape(sh[0],-1)
+        if not(np.any(patch)):
+            out[tsl] += 0
+            counts[sl] += 0
+            return
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         ux = ndimage.median_filter(u[:,:npc],size=(temporal_filter,1))
@@ -381,7 +385,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         shifts = np.array([_register_shift_1d(vcenter_ft,v) for v in signals_ft])
         shifts = shifts*(np.abs(shifts) < max_shift)
         
-        vecs_shifted = np.array([_shift_signal_i(v, p) for v,p in zip(signals, shifts)])
+        vecs_shifted = np.array([_shift_signal_i(v, p)  for v,p in zip(signals, shifts)])
         #vecs_shifted = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
         corrs_shifted = np.corrcoef(vecs_shifted)[kcenter]
         coherent_mask = corrs_shifted > 0.33
@@ -422,6 +426,61 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
                 out[:,r,c] = 0
     return out
 
+def _patch_denoise_medians(data,stride=2, nhood=5, mw=5,
+                           px = 50,
+                           th = 2,
+                           mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+
+    #preproc = lambda y: core.rescale(y)
+
+    #tmp_signals = np.zeros()
+    tv = np.arange(L)
+
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        
+        patch = data[tsl]
+        w_sh = patch.shape
+        signals = patch.reshape(sh[0],-1).T
+        #print(signals.shape)
+
+        #vm = np.median(signals,0)
+        vm = np.percentile(signals, px, axis=0)
+        vma = simple_pipeline_(vm, smoothed_rec=True)>0.001
+
+        nsv = np.array([mad_std(v) for v in signals]).reshape(-1,1)
+        pf = np.array([smoothed_medianf(v,1.0,mw) for v in signals])
+        rec = pf*vma*(pf>th*nsv)
+        #score = score.reshape(w_sh[1:])
+        score = 1.0
+        out[tsl] += score*rec.T.reshape(w_sh)
+        counts[sl] += score
+        
+    for r in range(nhood,sh[1]-nhood,stride):
+        for c in range(nhood,sh[2]-nhood,stride):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/(1e-12+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out[:,r,c] = 0
+    return out
 
 
 def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
@@ -644,20 +703,27 @@ def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160
     return  l2spline(low_env, np.min(smooth_levels))
 
 
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True):
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True,
+                     noise_sigma = None,
+                     correct_bias = True):
+                     
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
     if not any(y):
         return np.zeros_like(y)
-    ns = rolling_sd_pd(y)
-    #low = y < 2.5*np.median(y)
-    low = y < np.median(y) + 1.5*ns
-    if not any(low):
-        low = np.ones(len(y),np.bool)
-    bias = np.median(y[low])
-    if bias > 0:
-        y = y-bias    
+    
+    ns = rolling_sd_pd(y) if noise_sigma is None else noise_sigma
+
+    if correct_bias:
+        bias = find_bias(y,th=1.5,ns=ns)
+        #low = y < np.median(y) + 1.5*ns
+        #if not any(low):
+        #    low = np.ones(len(y),np.bool)
+        #    bias = np.median(y[low])
+        #    if bias > 0:
+        #        y = y-bias
+        y = y-bias
     vn = y/ns
     #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
     if labeler_kw is None:
