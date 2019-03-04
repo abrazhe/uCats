@@ -174,7 +174,9 @@ def process_record(fs, fname, series, args):
     print('Calculating dynamic fluorescence baseline for motion-corrected data')
     smooth,mw = len(fsc)//10, len(fsc)//5
     #benh = ucats.calculate_baseline_pca(fsc.data, smooth=smooth,medianw=mw)
-    benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
+    #benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
+    benh = ucats.calculate_baseline_pca_asym(fsc.data.astype(np.float32),niter=20,verbose=True)
+    benh = fseq.from_array(benh)
     h5f = None
     detected_name = nametag+'-detected.h5'
     colored_mask = dark_area_mask(benh.data.mean(0))
@@ -196,24 +198,28 @@ def process_record(fs, fname, series, args):
         fsx = fseq.from_hdf5(detected_name)
     else:
         print("Calculating 'augmented' data")
-        print(' - denoising ΔF/F frames')
-        dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
-                                                npc=args.signal_patch_denoise_npc,
-                                                spatial_filter=args.signal_patch_denoise_spatial_size,
-                                                mask_of_interest=colored_mask)
-        if args.save_denoised_dfof:
-            fs_tmp_ = fseq.from_array(dfof_cleaned)
-            fs_tmp_.meta['channel'] = 'dfof_denoised'
-            fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
+        #print(' - denoising ΔF/F frames')
+        #dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
+        #                                        npc=args.signal_patch_denoise_npc,
+        #                                        spatial_filter=args.signal_patch_denoise_spatial_size,
+        #                                        mask_of_interest=colored_mask)
+        #if args.save_denoised_dfof:
+        #    fs_tmp_ = fseq.from_array(dfof_cleaned)
+        #    fs_tmp_.meta['channel'] = 'dfof_denoised'
+        #    fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
         print(' - Detecting and cleaning up events...')
 
-        labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
-        labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+        #labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
+        #labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
 
-        fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
-                              labeler = labeler,
-                              labeler_kw=labeler_kwargs,
-                              mask_of_interest=colored_mask)
+        #fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
+        #                      labeler = labeler,
+        #                      labeler_kw=labeler_kwargs,
+        #                      mask_of_interest=colored_mask)
+        dfof = fsc.data/benh.data-1.0
+        fsx,_ = ucats.find_events_by_median_filtering(dfof)
+        fsx = fseq.from_array(fsx)
+        fsx.meta['channel'] = '-newrec5-medians-'
         
         coll_ = ucats.EventCollection(fsx.data, 
                                       threshold=args.event_segmentation_threshold,                                     
