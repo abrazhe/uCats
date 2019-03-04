@@ -19,7 +19,7 @@ from numpy.random import randn
 
 from scipy.fftpack import dct,idct
 from scipy import sparse
-from scipy import ndimage
+from scipy import ndimage as ndi
 
 
 
@@ -50,7 +50,24 @@ def make_weighting_kern(size,sigma=1.5):
     g = np.exp(-(0.5*(x/sigma)**2 + 0.5*(y/sigma)**2))
     return g
 
-
+@jit
+def avg_filter_greater(m, th=0):
+    nr,nc = m.shape
+    out = np.zeros_like(m)
+    for r in range(nr):
+        for c in range(nc):
+            if m[r,c] <= th:
+                continue
+            count,acc = 0,0
+            for i in range(r-1,r+2):
+                for j in range(c-1,c+2):
+                    if (0 <= i < nr) and (0 <= j < nc):
+                        if m[i,j] > th:
+                            count +=1
+                            acc += m[i,j]
+            if count > 0:
+                out[r,c] = acc/count
+    return out
 
 def signals_from_array_avg(data, stride=2, patch_size=5):
     """Convert a TXY image stack to a list of temporal signals (taken from small spatial windows/patches)"""  
@@ -111,7 +128,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
             return
         patch = patch.reshape(sh[0],-1).T
         if pre_smooth > 1:
-            patch = ndimage.median_filter(patch, size=(pre_smooth,1))
+            patch = ndi.median_filter(patch, size=(pre_smooth,1))
         Xc = patch.mean(0)
         u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
         points = u[:,:ncomp]
@@ -248,9 +265,9 @@ def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
         w_sh = patch.shape
         patch = patch.reshape(sh[0],-1).T
         Xc = patch.mean(0)
-        Xc = ndimage.median_filter(Xc,3)
+        Xc = ndi.median_filter(Xc,3)
         u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
-        #ux = ndimage.median_filter(u[:,:npc],size=(3,1))
+        #ux = ndi.median_filter(u[:,:npc],size=(3,1))
         ux = u[:,:npc]
         proj = ux@np.diag(s[:npc])@vh[:npc]
         out[tsl] += (proj+Xc).T.reshape(w_sh)
@@ -392,14 +409,14 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
         u0,s0,vh0 = np.linalg.svd(vecs_shifted,full_matrices=False)
-        vhx0 = ndimage.median_filter(vh0[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh0[:npc]
+        vhx0 = ndi.median_filter(vh0[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh0[:npc]
         ux0 = u0[:,:npc]
         recs = ux0@np.diag(s0[:npc])@vhx0
         score = np.sum(s0[:npc]**2)/np.sum(s0**2)*np.ones(len(signals))
         
         if np.sum(coherent_mask) > npc:
             u,s,vh = np.linalg.svd(vecs_shifted[coherent_mask],False)
-            vhx = ndimage.median_filter(vh[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:npc]
+            vhx = ndi.median_filter(vh[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:npc]
             ux = u[:,:npc]
             recs_coh = (vecs_shifted@vh[:npc].T)@vh[:npc]
             score_coh = np.sum(s[:npc]**2)/np.sum(s**2)
@@ -426,10 +443,88 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
                 out[:,r,c] = 0
     return out
 
-def _patch_denoise_medians(data,stride=2, nhood=5, mw=5,
-                           px = 50,
-                           th = 2,
-                           mask_of_interest=None):
+
+def threshold_object_size(mask, min_size):
+    labels, nlab = ndi.label(mask)
+    objs = ndi.find_objects(labels)
+    out_mask = np.zeros_like(mask)
+    for k,o in enumerate(objs):
+        cond = labels[o]==(k+1)
+        if np.sum(cond) >= min_size:
+            out_mask[o][cond] = True
+    return out_mask
+
+@jit
+def percentile_th_frames(frames,plow=5):
+    sh = frames[0].shape
+    medians = np.median(frames,0)
+    out = np.zeros(medians.shape)
+    for r in range(sh[0]):
+        for c in range(sh[1]):
+            v = frames[:,r,c]
+            mu = medians[r,c]
+            out[r,c] = -np.percentile(v[v<mu],plow)
+    return out
+
+
+def select_overlapping(mask, seeds):
+    labels, nl = ndi.label(mask)
+    objs = ndi.find_objects(labels)
+    out = np.zeros_like(mask)
+    for k,o in enumerate(objs):
+        cond = labels[o]==k+1
+        if np.any(seeds[o][cond]):
+            out[o][cond] = True
+    return out
+
+#def find_events_by_median_filtering(frames, nw=5, plow=5, smooth=2.5):
+#    mf_frames = ndi.median_filter(frames, (1,nw,nw))
+#    ns = mad_std(mf_frames, axis=0)
+#    biases = find_bias_frames(mf_frames, 3, ns)
+#    mf_frames = (mf_frames-biases)/ns
+#    th = percentile_th_frames(mf_frames)
+#    return l2spline(mf_frames, smooth) > th
+
+def find_events_by_median_filtering(frames, nw=7, th=1.5, plow=2.5, smooth=2.5,
+                                    verbose=True):
+    
+    mf_frames = ndi.median_filter(frames, (1,nw,nw))    # spatial median filter
+    
+    nsm = mad_std(mf_frames, axis=0)
+    
+    biases = find_bias_frames(mf_frames, 3, nsm)
+    
+    mf_frames = (mf_frames-biases)/nsm # zscores
+    
+    th = percentile_th_frames(mf_frames,plow)
+    mask = (mf_frames > th)*(ndi.gaussian_filter(mf_frames, (smooth,0.5,0.5))>th)
+    #mask = np.array([threshold_object_size(m,)])
+    #mask = threshold_object_size(mask, 4**3)
+    if verbose:
+        print('Done mask from spatial filters')
+    
+    ns = mad_std(frames, axis=0)
+    frames_smooth = ndi.gaussian_filter(ndi.median_filter(frames, (5, 1,1)), (1.,0,0))
+    mask_a = frames_smooth > th*ns
+    
+    if verbose:
+        print('Done mask from temporal filters')
+        
+    mask_seeds = (mask_a + ndi.median_filter(mask_a, (1,3,3))>0)*mask
+    mask_seeds = np.array([threshold_object_size(m, 9) for m in mask_seeds])
+    
+    mask_final = mask_seeds
+    if verbose:
+        print('Merged masks')
+    #mask_final = select_overlapping(mask_a,mask_seeds)
+    
+    return np.array([avg_filter_greater(f,0) for f in frames_smooth*mask_final]), mask#mask_final
+
+
+def _patch_denoise_percentiles(data,stride=2, nhood=3, mw=5,
+                               px = 50,
+                               th = 1.5,
+                               mask_of_interest=None):
     sh = data.shape
     L = sh[0]
     
@@ -460,14 +555,35 @@ def _patch_denoise_medians(data,stride=2, nhood=5, mw=5,
 
         #vm = np.median(signals,0)
         vm = np.percentile(signals, px, axis=0)
-        vma = simple_pipeline_(vm, smoothed_rec=True)>0.001
+        vm = (vm-find_bias(vm))/mad_std(vm)
+        vma = simple_pipeline_(vm, smoothed_rec=True)
+        # todo extend masks a bit in time?
+        vma_mask = threshold_object_size(vma>0.1,5).astype(np.bool)
 
         nsv = np.array([mad_std(v) for v in signals]).reshape(-1,1)
-        pf = np.array([smoothed_medianf(v,1.0,mw) for v in signals])
-        rec = pf*vma*(pf>th*nsv)
+        pf = np.array([smoothed_medianf(v,0.5,mw) for v in signals])
+        pa = (pf > th*nsv)
+        pa_txy = pa.T.reshape(w_sh)
+        pa_txy2 = (ndi.median_filter(pa_txy.astype(np.float32),(3,3,3))>0)*vma_mask[:,None,None]
+
+        labels,nl = ndi.label(pa_txy+pa_txy2)
+        objs = ndi.find_objects(labels)
+        pa_txy3 = np.zeros_like(pa_txy)
+        for k,o in enumerate(objs):
+            cond = labels[o] == k+1
+            if np.any(pa_txy2[o][cond]):
+                pa_txy3[o][cond] = True
+
+        pf_txy = pf.T.reshape(w_sh)*pa_txy3
+        #pf_txy = (pf*vma_mask).
+        rec = np.array([avg_filter_greater(m,0) for m in pf_txy])
+        #rec = pf_txy
+        
+        
+        #rec = pf*vma*(pf>th*nsv)
         #score = score.reshape(w_sh[1:])
         score = 1.0
-        out[tsl] += score*rec.T.reshape(w_sh)
+        out[tsl] += score*rec
         counts[sl] += score
         
     for r in range(nhood,sh[1]-nhood,stride):
@@ -508,7 +624,7 @@ def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of
                 weights = weights/np.sum(weights)
                 wx = weights.reshape(w_sh[1:])
                 ks = np.argsort(weights)[::-1]
-                xs = ndimage.median_filter(patch, size=(5,1))
+                xs = ndi.median_filter(patch, size=(5,1))
                 out[(slice(None),)+sl] += xs[np.argsort(ks)].T.reshape(w_sh)*wx[None,:,:]
                 counts[sl] += wx
     out /= counts
@@ -619,7 +735,7 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
     Etimate time-varying level of noise standard deviation
     """
     if not input_is_details:
-        details = v-ndimage.median_filter(v,20)
+        details = v-ndi.median_filter(v,20)
     else:
         details = v
     if hw is None: hw = int(len(details)/10.)    
@@ -663,7 +779,7 @@ def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
         rec_minus = -process_signal(-y,k=3,rec_variant=1)
         rec=rec+rec_minus
     res = y-rec
-    b = l2spline(ndimage.percentile_filter(res,plow,smooth_level),smooth_level/2)
+    b = l2spline(ndi.percentile_filter(res,plow,smooth_level),smooth_level/2)
     rsd = rolling_sd_pd(res-b)
     return b,rsd,res
 
@@ -678,10 +794,10 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
 
 def smoothed_medianf(v,smooth=10,wmedian=10):
     "Robust smoothing by first applying median filter and then applying L2-spline filter" 
-    return l2spline(ndimage.median_filter(v, wmedian),smooth)
+    return l2spline(ndi.median_filter(v, wmedian),smooth)
 
 def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
-    b = l2spline(ndimage.percentile_filter(y,plow,smooth),smooth/5)
+    b = l2spline(ndi.percentile_filter(y,plow,smooth),smooth/5)
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
@@ -785,7 +901,7 @@ def mad_std(v,axis=None):
 
 
 def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
-    medfilt = ndimage.median_filter(frames, [tsmooth,ssmooth,ssmooth])
+    medfilt = ndi.median_filter(frames, [tsmooth,ssmooth,ssmooth])
     details = frames - medfilt
     mdmap = np.median(details, axis=0)
     sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
@@ -795,7 +911,7 @@ def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:
-        details = v-ndimage.median_filter(v,20)
+        details = v-ndi.median_filter(v,20)
     else:
         details = v
     if hw is None: hw = int(len(details)/10.)    
@@ -819,7 +935,7 @@ def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,i
 
 def rolling_sd_scipy(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:
-        details = v-ndimage.median_filter(v,20)
+        details = v-ndi.median_filter(v,20)
     else:
         details = v
     if hw is None: hw = int(len(details)/10.)    
@@ -827,7 +943,7 @@ def rolling_sd_scipy(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=
     tv = np.arange(len(details))
     #out = np.zeros(len(details))
     
-    rolling_median = lambda x: ndimage.median_filter(x, 2*hw)
+    rolling_median = lambda x: ndi.median_filter(x, 2*hw)
     
     out = 1.4826*rolling_median(np.abs(padded-rolling_median(padded)))[hw:-hw]
 
@@ -865,14 +981,14 @@ def baseline_als_spl(y, k=0.5, tau=11, smooth=25., p=0.001, niter=100,eps=1e-4,
     if rsd is None:
         if rsd_smoother is None:
             #rsd_smoother = lambda v_: l2spline(v_, 5)
-            rsd_smoother = lambda v_: ndimage.median_filter(y,7)
+            rsd_smoother = lambda v_: ndi.median_filter(y,7)
         rsd = rolling_sd_pd(y-rsd_smoother(y), input_is_details=True)
     else:
         rsd = np.pad(rsd, npad,"reflect")
     
     #ys = l1spline(y,tau)
     ntau = np.int(np.ceil(tau))
-    ys = ndimage.median_filter(y,ntau)
+    ys = ndi.median_filter(y,ntau)
     s2 = l1spline(y, smooth/4.)
     #s2 = l2spline(y,smooth/4.)
     zprev = None
@@ -902,7 +1018,7 @@ def double_scale_baseline(y,smooth1=15.,smooth2=25.,rsd=None,**kwargs):
     Baseline estimation in 1D signals by asymmetric smoothing and using two different time scales
     """
     if rsd is None:
-        rsd_smoother = lambda v_: ndimage.median_filter(y,7)
+        rsd_smoother = lambda v_: ndi.median_filter(y,7)
         rsd = rolling_sd_pd(y-rsd_smoother(y), input_is_details=True)
     b1 = baseline_als_spl(y,tau=smooth1,smooth=smooth1,rsd=rsd,**kwargs)
     b2 = baseline_als_spl(y,tau=smooth1,smooth=smooth2,rsd=rsd,**kwargs)
@@ -1026,21 +1142,21 @@ def sp_rec_with_labels(vec, labels,
     
     for i in range(niters):
         #vec1 = vec1 - kgain*(vec1-vrec) # how to use it?
-        labs,nl = ndimage.label(weights)
-        objs = ndimage.find_objects(labs)
+        labs,nl = ndi.label(weights)
+        objs = ndi.find_objects(labs)
         #for o in objs:
         #    stop = o[0].stop
         #    while stop < len(vec) and vrec[stop]>0.25*vrec[o].max():
         #        weights[stop] = 1   
         #        stop+=1
-        wer_grow = ndimage.binary_dilation(weights)
-        wer_shrink = ndimage.binary_erosion(weights)
+        wer_grow = ndi.binary_dilation(weights)
+        wer_shrink = ndi.binary_erosion(weights)
         #weights = np.where((vec1<np.mean(vec1[vec1>0])), wer, weights)
         if np.any(vrec>0):
             weights = np.where(vrec<0.5*np.mean(vrec[vrec>0]), wer_shrink, weights)
             weights = np.where(vrec>1.25*np.mean(vrec[vrec>0]), wer_grow, weights)        
         vrec = smoother(vec*weights,min_scale,wmedian)
-        #weights = ndimage.binary_opening(weights)
+        #weights = ndi.binary_opening(weights)
         vrec[vrec<0] = 0
         #plt.figure(); plt.plot(vec1)
         #vrec[weights<0.5] *=0.5
@@ -1126,7 +1242,7 @@ from imfun.core import extrema
 
 def segment_events_1d(rec, th=0.05, th2 =0.1, smoothing=6, min_lenth=3):
     levels = rec>th
-    labeled, nlab = ndimage.label(levels)
+    labeled, nlab = ndi.label(levels)
     smrec = l1spline(rec, smoothing)
     #smrec = l2spline(rec, 6)
     mxs = np.array(extrema.locextr(smrec, output='max',refine=False))
@@ -1146,13 +1262,13 @@ def segment_events_1d(rec, th=0.05, th2 =0.1, smoothing=6, min_lenth=3):
                 for lm in lms:
                     tmp_mask = mask.copy()
                     tmp_mask[int(lm[0])] = 0
-                    ll_,nl_ = ndimage.label(tmp_mask)
+                    ll_,nl_ = ndi.label(tmp_mask)
                     min_region = np.min([np.sum(ll_ == i_) for i_ in range(1,nl_+1)])
                     if min_region > min_lenth:
                         cuts.append(lm[0])
                         levels[int(lm[0])]=False
                     
-    labeled,nlab=ndimage.label(levels)
+    labeled,nlab=ndi.label(levels)
     
     #plot(labeled>0)
     return labeled, nlab
@@ -1164,7 +1280,7 @@ def pca_flip_signs(pcf,medianw=None):
     if medianw is None:
         medianw = L//5
     for i,c in enumerate(pcf.coords.T):
-        sk = skew(c-ndimage.median_filter(c,medianw))
+        sk = skew(c-ndi.median_filter(c,medianw))
         sg = np.sign(sk)
         #print(i, sk)
         pcf.coords[:,i] *= sg
@@ -1176,7 +1292,7 @@ def svd_flip_signs(u,vh,medianw=None):
     if medianw is None:
         medianw = L//5
     for i,c in enumerate(u.T):
-        sk = skew(c-ndimage.median_filter(c,medianw))
+        sk = skew(c-ndi.median_filter(c,medianw))
         sg = np.sign(sk)
         u[:,i] *= sg
         vh[i] *= sg
@@ -1242,6 +1358,7 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     fs_base.meta['channel'] = 'baseline_pca'
     return fs_base
 
+#@jit
 def find_bias_frames(frames, th, ns):
     signals = core.ah.ravel_frames(frames).T
     nsr = np.ravel(ns)
@@ -1278,7 +1395,7 @@ def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbos
             delta = frames-rec
             ns0 = np.median(np.abs(delta - np.median(delta,axis=0)), axis=0)*1.4826
             biases = find_bias_frames(delta,3,ns0)
-            frames_w = rec + biases#np.array([ucats.find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
+            frames_w = rec + biases#np.array([find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
             
     return frames_w
 
@@ -1380,7 +1497,7 @@ def make_enh4(frames, pipeline=simple_pipeline_,
               kind='pca', nhood=5, stride=2, mask_of_interest=None,
               labeler_kw=None):
     from imfun import fseq
-    #coll = ucats.signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
+    #coll = signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
     if kind.lower()=='corr':
         coll = signals_from_array_correlation(frames,stride=stride,nhood=nhood,mask_of_interest=mask_of_interest)
     elif kind.lower()=='pca':
@@ -1463,8 +1580,8 @@ def process_framestack(frames,min_area=9,verbose=False,
     
 
 def segment_events(dataset,threshold=0.01):
-    labels, nlab = ndimage.label(np.asarray(dataset,dtype=_dtype_)>threshold)
-    objs = ndimage.find_objects(labels)
+    labels, nlab = ndi.label(np.asarray(dataset,dtype=_dtype_)>threshold)
+    objs = ndi.find_objects(labels)
     return labels, objs
 
 
