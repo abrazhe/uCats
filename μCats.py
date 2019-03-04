@@ -74,7 +74,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     d = np.array(data).astype(_dtype_)
     acc = []
     squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
-    w = make_weighting_kern(patch_size)
+    w = make_weighting_kern(patch_size,2.5)
     w = w/w.sum()
     
     tslice = (slice(None),)
@@ -485,7 +485,7 @@ def select_overlapping(mask, seeds):
 #    th = percentile_th_frames(mf_frames)
 #    return l2spline(mf_frames, smooth) > th
 
-def find_events_by_median_filtering(frames, nw=7, th=1.5, plow=2.5, smooth=2.5,
+def find_events_by_median_filtering(frames, nw=11, th=1.5, plow=2.5, smooth=2.5,
                                     verbose=True):
     
     mf_frames = ndi.median_filter(frames, (1,nw,nw))    # spatial median filter
@@ -1495,6 +1495,7 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
 def make_enh4(frames, pipeline=simple_pipeline_,
               labeler=percentile_label,
               kind='pca', nhood=5, stride=2, mask_of_interest=None,
+              pipeline_kw=None,
               labeler_kw=None):
     from imfun import fseq
     #coll = signals_from_array_pca_cluster(frames,stride=2,dbscan_eps=0.05,nhood=5,walpha=0.5)
@@ -1508,8 +1509,10 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     else:
         coll = signals_from_array_avg(frames,stride=stride,patch_size=nhood*2+1,mask_of_interest=mask_of_interest)
     print('\nTime-signals, grouped,  processing (may take long time) ...')
-    coll_enh = process_signals_parallel(coll,pipeline=pipeline,
-                                        pipeline_kw=dict(labeler=labeler,labeler_kw=labeler_kw))
+    if pipeline_kw is None:
+        pipeline_kw = {}
+    pipeline_kw.update(labeler=labeler,labeler_kw=labeler_kw)
+    coll_enh = process_signals_parallel(coll,pipeline=pipeline, pipeline_kw=pipeline_kw)
     print('Time-signals processed, recombining to video...')
     out = combine_weighted_signals(coll_enh,frames.shape)
     fsx = fseq.from_array(out)
