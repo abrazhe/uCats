@@ -80,8 +80,10 @@ def main():
         '--skip-existing': dict(action='store_true'),
         '--no-skip-dark-areas':dict(action='store_false'),
         '--do-oscillations': dict(action='store_true'),
+        '--detection-do-adaptive-median-filter': dict(default=1,type=bool,
+                                                      help='whether to pre-filter data with an adaptive median filter'),
         '--detection-do-jitter':dict(default=0,type=bool,
-                                        help='whether to use local jitter in detection algorithm;\
+                                     help='whether to use local jitter in detection algorithm;\
  reduces false positive ratio, but can lead to missed events'),
         '--detection-low-percentile':dict(default=1.5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
@@ -174,14 +176,22 @@ def process_record(fs, fname, series, args):
 
     if args.no_events:
         return
-    
+
+    # -- Adaptive median filtering input data --
+    if args.detection_do_adaptive_median_filter:
+        print("Performing adaptive median filtering of the raw fluorescence signal")
+        frames = ucats.adaptive_median_filter_frames(fsc.data.astype(float32),
+                                                     th=10, tsmooth=5, ssmooth=3)
+        frames = frames.astype(float32)
+    else:
+        frames = fsc.data.astype(np.float32)
     
     # III. Calculate baseline
     print('Calculating dynamic fluorescence baseline for motion-corrected data')
     smooth,mw = len(fsc)//10, len(fsc)//5
     #benh = ucats.calculate_baseline_pca(fsc.data, smooth=smooth,medianw=mw)
     #benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
-    benh = ucats.calculate_baseline_pca_asym(fsc.data.astype(np.float32),niter=20,verbose=True)
+    benh = ucats.calculate_baseline_pca_asym(frames,niter=20,verbose=True)
     benh = fseq.from_array(benh)
     h5f = None
     detected_name = nametag+'-detected.h5'
@@ -230,10 +240,11 @@ def process_record(fs, fname, series, args):
         #                      pipeline_kw=pipeline_kwargs,
         #                      labeler_kw=labeler_kwargs,
         #                      mask_of_interest=colored_mask)
-        dfof = fsc.data/benh.data-1.0
-        fsx,_ = ucats.find_events_by_median_filtering(dfof)
-        fsx = fseq.from_array(fsx)
-        fsx.meta['channel'] = '-newrec5-medians-'
+        dfof = frames/benh.data-1.0
+        #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
+        #fsx = fseq.from_array(fsx)
+        #fsx.meta['channel'] = '-newrec5-medians-'
+        fsx = ucats.make_enh5(dfof, nhood=args.detection_loc_nhood, verbose=args.verbose)
         
         coll_ = ucats.EventCollection(fsx.data, 
                                       threshold=args.event_segmentation_threshold,                                     

@@ -314,9 +314,9 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
             return
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
-        ux = ndimage.median_filter(u[:,:npc],size=(temporal_filter,1))
+        ux = ndi.median_filter(u[:,:npc],size=(temporal_filter,1))
         vh_images = vh[:npc].reshape(-1,*w_sh[1:])
-        vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         vhx_threshs = [mad_std(f) for f in vh_images]
         vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         vhx = vhx.reshape(npc,len(vh[0]))
@@ -357,7 +357,6 @@ def _register_shift_1d(target,source):
 
 def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
                                    temporal_filter=1,
-                                   spatial_filter=1,
                                    max_shift = 10,
                                    mask_of_interest=None):
     sh = data.shape
@@ -409,7 +408,10 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
         u0,s0,vh0 = np.linalg.svd(vecs_shifted,full_matrices=False)
-        vhx0 = ndi.median_filter(vh0[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh0[:npc]
+        if temporal_filter > 1:
+            vhx0 = ndi.gaussian_filter(ndi.median_filter(vh0[:npc],size=(1,temporal_filter)),sigma=(0,0.5))
+        else:
+            vhx0 = vh0[:npc]
         ux0 = u0[:,:npc]
         recs = ux0@np.diag(s0[:npc])@vhx0
         score = np.sum(s0[:npc]**2)/np.sum(s0**2)*np.ones(len(signals))
@@ -485,40 +487,53 @@ def select_overlapping(mask, seeds):
 #    th = percentile_th_frames(mf_frames)
 #    return l2spline(mf_frames, smooth) > th
 
-def find_events_by_median_filtering(frames, nw=11, th=1.5, plow=2.5, smooth=2.5,
-                                    verbose=True):
+def opening_of_closing(m):
+    return ndi.binary_opening(ndi.binary_closing(m))
+
+
+def to_zscore_frames(frames):
+    nsm = mad_std(frames, axis=0)
+    biases = find_bias_frames(frames, 3, nsm)
+    return (frames-biases)/nsm
+
+
+def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
+                                   verbose=True):
     
-    mf_frames = ndi.median_filter(frames, (1,nw,nw))    # spatial median filter
-    
-    nsm = mad_std(mf_frames, axis=0)
-    
-    biases = find_bias_frames(mf_frames, 3, nsm)
-    
-    mf_frames = (mf_frames-biases)/nsm # zscores
+    mf_frames50 = ndi.percentile_filter(frames,50, (1,nw,nw))    # spatial median filter
+    #mf_frames85 = ndi.percentile_filter(frames,85, (1,nw,nw))    # spatial top 85% filter   
+    mf_frames = mf_frames50#*mf_frames85
+    del mf_frames50#,mf_frames85
+
+    if verbose:
+        print('Done percentile filters')
+
+    mf_frames = to_zscore_frames(mf_frames)
     
     th = percentile_th_frames(mf_frames,plow)
     mask = (mf_frames > th)*(ndi.gaussian_filter(mf_frames, (smooth,0.5,0.5))>th)
+    mask = ndi.binary_dilation(opening_of_closing(mask))
     #mask = np.array([threshold_object_size(m,)])
     #mask = threshold_object_size(mask, 4**3)
     if verbose:
         print('Done mask from spatial filters')
+    return mask
     
-    ns = mad_std(frames, axis=0)
-    frames_smooth = ndi.gaussian_filter(ndi.median_filter(frames, (5, 1,1)), (1.,0,0))
-    mask_a = frames_smooth > th*ns
-    
-    if verbose:
-        print('Done mask from temporal filters')
-        
-    mask_seeds = (mask_a + ndi.median_filter(mask_a, (1,3,3))>0)*mask
-    mask_seeds = np.array([threshold_object_size(m, 9) for m in mask_seeds])
-    
-    mask_final = mask_seeds
-    if verbose:
-        print('Merged masks')
-    #mask_final = select_overlapping(mask_a,mask_seeds)
-    
-    return np.array([avg_filter_greater(f,0) for f in frames_smooth*mask_final]), mask#mask_final
+    #ns = mad_std(frames, axis=0)
+    #frames_smooth = ndi.gaussian_filter(ndi.median_filter(frames, (5, 1,1)), (1.,0,0))
+    #mask_a = frames_smooth > th*ns
+    #
+    #if verbose:
+    #    print('Done mask from temporal filters')
+    #    
+    #mask_seeds = (mask_a + ndi.median_filter(mask_a, (1,3,3))>0)*mask
+    #mask_seeds = np.array([threshold_object_size(m, 9) for m in mask_seeds])
+    # 
+    #mask_final = mask_seeds
+    #if verbose:
+    #    print('Merged masks')
+    ##mask_final = select_overlapping(mask_a,mask_seeds)
+    #return np.array([avg_filter_greater(f,0) for f in frames_smooth*mask_final]), mask, mask_final
 
 
 def _patch_denoise_percentiles(data,stride=2, nhood=3, mw=5,
@@ -809,6 +824,21 @@ def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     return np.median(y[y<np.median(y)+th*ns])
+
+
+@jit
+def find_bias_frames(frames, th, ns):
+    signals = core.ah.ravel_frames(frames).T
+    nsr = np.ravel(ns)
+    #print(nsr.shape, signals.shape)
+    biases = np.zeros(nsr.shape)
+    for j in range(len(biases)):
+        biases[j] = find_bias(signals[j],th,nsr[j])
+    #biases = np.array([find_bias(v,th,ns_) for  v,ns_ in zip(signals, nsr)])
+    return biases.reshape(frames[0].shape)
+
+
+
 
 def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160], ns=None):
     if ns is None:
@@ -1358,15 +1388,6 @@ def calculate_baseline_pca(frames,smooth=60,npc=None,pcf=None,return_type='array
     fs_base.meta['channel'] = 'baseline_pca'
     return fs_base
 
-#@jit
-def find_bias_frames(frames, th, ns):
-    signals = core.ah.ravel_frames(frames).T
-    nsr = np.ravel(ns)
-    #print(nsr.shape, signals.shape)
-    biases = np.array([find_bias(v,th,ns_) for  v,ns_ in zip(signals, nsr)])
-    return biases.reshape(frames[0].shape)
-
-
 def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbose=False):
     """Use asymetrically smoothed principal components to estimate time-varying baseline fluorescence F0"""
     frames_w = np.copy(frames)
@@ -1520,7 +1541,49 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     fsx.meta['channel']='-'.join(['newrec4',kind])
     return fsx
 
+def svd_denoise_tslices(frames, twindow=50,nhood=5,npc=5,
+                        mask_of_interest=None,
+                        th = 0.05,
+                        verbose=True,
+                        denoiser=_patch_pca_denoise_with_shifts,
+                        **denoiser_kw):
+    
+    L = len(frames)
+    sh =  frames[0].shape
+    tslices = [slice(i, i+twindow) for i in range(0,L-50,twindow//2)] + [slice(L-twindow, L)]
+    counts = np.zeros(L)
+    
+    if mask_of_interest is None:
+        mask_list = (ones(sh) for t in tslices)
+    elif np.ndim(mask_of_interest) == 2:
+        mask_list = (mask_of_interest for  t in tslices)
+    else:
+        mask_list = (mask_of_interest[t].mean(0)>th for t in tslices)
+    
+    out = np.zeros(frames.shape)
+    for k,ts,m in zip(range(L), tslices, mask_list):
+        out[ts] += denoiser(frames[ts], mask_of_interest=m, **denoiser_kw)
+        counts[ts] +=1
+        if verbose:
+            sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
+        
+    return out/counts[:,None,None]
 
+
+def make_enh5(dfof, twindow=50, nhood=5,stride=2,temporal_filter=3, verbose=False):
+    from imfun import fseq
+    amask = activity_mask_median_filtering(dfof, nw=7,verbose=verbose)
+    nsf = mad_std(dfof, axis=0)
+    dfof_denoised = svd_denoise_tslices(dfof,twindow, mask_of_interest=amask, temporal_filter=temporal_filter, verbose=verbose)
+    mask_active = dfof_denoised > nsf
+    mask_active = opening_of_closing(mask_active) + ndi.median_filter(mask_active,3)>0
+    dfof_denoised2 = np.array([avg_filter_greater(f, 0) for f in dfof_denoised*mask_active])
+    fsx = fseq.from_array(dfof_denoised2)
+    if verbose:
+        print('Done')
+    fsx.meta['channel']='-'.join(['newrec5'])
+    return fsx
+    
 
 def max_shifts(shifts,verbose=0):
     #ms = np.max(np.abs([s.fn_((0,0)) if s.fn_ else s.field[...,0,0] for s in shifts]),axis=0)
