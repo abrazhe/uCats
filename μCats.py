@@ -340,6 +340,34 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
                 out[:,r,c] = 0
     return out
 
+import itertools as itt
+def locations(shape):
+    """ all locations for a shape; substitutes nested cycles"""
+    return itt.product(*map(range, shape))
+
+
+def points2mask(points,sh):
+    out = np.zeros(sh, np.bool)
+    for p in points:
+        out[tuple(p)] = True
+    return out
+
+def mask2points(mask):
+    "mask to a list of points, as row,col"
+    points = []
+    for loc in locations(mask.shape):
+        if mask[loc]:
+            points.append(loc) 
+    return points
+
+from imfun import cluster
+def cleanup_mask(m, eps=3, min_pts=5):
+    p = mask2points(m)
+    _,_,labels = cluster.dbscan(p, eps, min_pts)
+    points_f = (p for p,l in zip(p, labels) if l >= 0)
+    return points2mask(points_f, m.shape)
+
+
 from skimage.feature import register_translation
 from skimage import transform as skt
 from imfun import core
@@ -823,7 +851,7 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
 def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    return np.median(y[y<np.median(y)+th*ns])
+    return np.median(y[y<=np.median(y)+th*ns])
 
 
 @jit
@@ -929,15 +957,22 @@ def mad_std(v,axis=None):
     mad = np.median(abs(v-np.median(v,axis=axis)),axis=axis)
     return mad*1.4826
 
+def closing_of_opening(m,s=None):
+    return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
+def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5):
     medfilt = ndi.median_filter(frames, [tsmooth,ssmooth,ssmooth])
     details = frames - medfilt
     mdmap = np.median(details, axis=0)
     sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
-    return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
-
-
+    #sdmap = ucats.mad_std(frames,axis=0)
+    outliers = np.abs(details-mdmap) > th*sdmap
+    #s = np.zeros((3,3,3)); 
+    #s[:,1,1] = 1
+    s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
+    #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
+    outliers ^= closing_of_opening(outliers)
+    return np.where(outliers, medfilt, frames)
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:
@@ -1414,8 +1449,10 @@ def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbos
             if verbose:
                 print('\n finished iterations')
             delta = frames-rec
-            ns0 = np.median(np.abs(delta - np.median(delta,axis=0)), axis=0)*1.4826
+            #ns0 = np.median(np.abs(delta - np.median(delta,axis=0)), axis=0)*1.4826
+            ns0 = mad_std(delta, axis=0)
             biases = find_bias_frames(delta,3,ns0)
+            biases[np.isnan(biases)] = 0
             frames_w = rec + biases#np.array([find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
             
     return frames_w
@@ -1554,7 +1591,7 @@ def svd_denoise_tslices(frames, twindow=50,nhood=5,npc=5,
     counts = np.zeros(L)
     
     if mask_of_interest is None:
-        mask_list = (ones(sh) for t in tslices)
+        mask_list = (np.ones(sh) for t in tslices)
     elif np.ndim(mask_of_interest) == 2:
         mask_list = (mask_of_interest for  t in tslices)
     else:
