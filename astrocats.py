@@ -226,8 +226,7 @@ def process_record(fs, fname, series, args):
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
     else:
-        print("Calculating 'augmented' data")
-        #print(' - denoising ΔF/F frames')
+        print("Calculating 'augmented' data")        #print(' - denoising ΔF/F frames')
         #dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
         #                                        npc=args.signal_patch_denoise_npc,
         #                                        temporal_filter=args.signal_patch_denoise_temporal_size,

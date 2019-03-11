@@ -6,6 +6,8 @@ import os,sys
 from numba import jit
 
 from functools import partial
+import itertools as itt
+
 import matplotlib.pyplot as plt
 
 
@@ -14,7 +16,7 @@ import numpy as np
 
 from numpy import pi
 from numpy import linalg
-from numpy.linalg import norm
+from numpy.linalg import norm, lstsq, svd, eig
 from numpy.random import randn
 
 from scipy.fftpack import dct,idct
@@ -249,44 +251,44 @@ def signals_from_array_correlation(data,stride=2,nhood=5,
     return acc
 
 from imfun import components
-def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
-    sh = data.shape
-    L = sh[0]
-    #if mask_of_interest is None:
-    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    out = np.zeros(sh,_dtype_)
-    counts = np.zeros(sh[1:],int)
-    mask=np.ones(counts.shape,bool)
-    Ln = (2*nhood+1)**2
-    def _process_loc(r,c):
-        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
-        tsl = (slice(None),)+sl
-        patch = data[tsl]
-        w_sh = patch.shape
-        patch = patch.reshape(sh[0],-1).T
-        Xc = patch.mean(0)
-        Xc = ndi.median_filter(Xc,3)
-        u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
-        #ux = ndi.median_filter(u[:,:npc],size=(3,1))
-        ux = u[:,:npc]
-        proj = ux@np.diag(s[:npc])@vh[:npc]
-        out[tsl] += (proj+Xc).T.reshape(w_sh)
-        counts[sl] += 1
+# def patch_pca_denoise(data,stride=2, nhood=5, npc=6):
+#     sh = data.shape
+#     L = sh[0]
+#     #if mask_of_interest is None:
+#     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+#     out = np.zeros(sh,_dtype_)
+#     counts = np.zeros(sh[1:],int)
+#     mask=np.ones(counts.shape,bool)
+#     Ln = (2*nhood+1)**2
+#     def _process_loc(r,c):
+#         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+#         tsl = (slice(None),)+sl
+#         patch = data[tsl]
+#         w_sh = patch.shape
+#         patch = patch.reshape(sh[0],-1).T
+#         Xc = patch.mean(0)
+#         Xc = ndi.median_filter(Xc,3)
+#         u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
+#         #ux = ndi.median_filter(u[:,:npc],size=(3,1))
+#         ux = u[:,:npc]
+#         proj = ux@np.diag(s[:npc])@vh[:npc]
+#         out[tsl] += (proj+Xc).T.reshape(w_sh)
+#         counts[sl] += 1
         
-    for r in range(nhood,sh[1]-nhood,stride):
-        for c in range(nhood,sh[2]-nhood,stride):
-            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
-            if mask[r,c]:
-                _process_loc(r,c)
-    out = out/counts[None,:,:]
-    for r in range(sh[1]):
-        for c in range(sh[2]):
-            if counts[r,c] ==0:
-                out[:,r,c] = 0
-    return out
+#     for r in range(nhood,sh[1]-nhood,stride):
+#         for c in range(nhood,sh[2]-nhood,stride):
+#             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+#             if mask[r,c]:
+#                 _process_loc(r,c)
+#     out = out/counts[None,:,:]
+#     for r in range(sh[1]):
+#         for c in range(sh[2]):
+#             if counts[r,c] ==0:
+#                 out[:,r,c] = 0
+#     return out
 
 
-def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
+def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                        temporal_filter=1,
                        spatial_filter=1,
                        mask_of_interest=None):
@@ -302,7 +304,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
     else:
         mask = mask_of_interest
     Ln = (2*nhood+1)**2
-    def _process_loc(r,c):
+    def _process_loc(r,c,rank):
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
         tsl = (slice(None),)+sl
         patch = data[tsl]
@@ -314,25 +316,28 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
             return
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
-        ux = ndi.median_filter(u[:,:npc],size=(temporal_filter,1))
-        vh_images = vh[:npc].reshape(-1,*w_sh[1:])
+        if rank is None:
+            rank = min_ncomp(s, patch.shape)
+            sys.stderr.write(' svd rank: %02d'% rank)
+        ux = ndi.median_filter(u[:,:rank],size=(temporal_filter,1))
+        vh_images = vh[:rank].reshape(-1,*w_sh[1:])
         vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         vhx_threshs = [mad_std(f) for f in vh_images]
         vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
-        vhx = vhx.reshape(npc,len(vh[0]))
+        vhx = vhx.reshape(rank,len(vh[0]))
         #print('\n', patch.shape, u.shape, vh.shape)
-        #ux = u[:,:npc]
-        proj = ux@np.diag(s[:npc])@vhx[:npc]
-        score = np.sum(s[:npc]**2)/np.sum(s**2)
+        #ux = u[:,:rank]
+        proj = ux@np.diag(s[:rank])@vhx[:rank]
+        score = np.sum(s[:rank]**2)/np.sum(s**2)
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
         counts[sl] += score
         
-    for r in range(nhood,sh[1]-nhood,stride):
-        for c in range(nhood,sh[2]-nhood,stride):
+    for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
+        for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
-                _process_loc(r,c)
+                _process_loc(r,c,npc)
     out = out/(1e-12+counts[None,:,:])
     for r in range(sh[1]):
         for c in range(sh[2]):
@@ -340,7 +345,6 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=6,
                 out[:,r,c] = 0
     return out
 
-import itertools as itt
 def locations(shape):
     """ all locations for a shape; substitutes nested cycles"""
     return itt.product(*map(range, shape))
@@ -362,6 +366,8 @@ def mask2points(mask):
 
 from imfun import cluster
 def cleanup_mask(m, eps=3, min_pts=5):
+    if not np.any(m):
+        return np.zeros_like(m)
     p = mask2points(m)
     _,_,labels = cluster.dbscan(p, eps, min_pts)
     points_f = (p for p,l in zip(p, labels) if l >= 0)
@@ -383,9 +389,9 @@ def _register_shift_1d(target,source):
     k1 = np.argmax(z)
     return -k1 if k1 < L/2 else (L-k1)
 
-def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
+def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
                                    temporal_filter=1,
-                                   max_shift = 10,
+                                   max_shift = 20,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -415,7 +421,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         
         patch = data[tsl]
         w_sh = patch.shape
-        signals = patch.reshape(sh[0],-1).T
+        signals = patch.reshape(L,-1).T
 
         signals_ft = np.fft.fft(signals, axis=1)
         kcenter = 2*nhood*(nhood+1)
@@ -436,20 +442,21 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
         #print(r,c,': sum coherent: ', np.sum(coherent_mask),'/',len(coherent_mask),'mean coh:',np.mean(corrs_shifted), '\n',)
 
         u0,s0,vh0 = np.linalg.svd(vecs_shifted,full_matrices=False)
+        rank = min_ncomp(s0, vecs_shifted.shape)+1 if npc is None else npc
         if temporal_filter > 1:
-            vhx0 = ndi.gaussian_filter(ndi.median_filter(vh0[:npc],size=(1,temporal_filter)),sigma=(0,0.5))
+            vhx0 = ndi.gaussian_filter(ndi.median_filter(vh0[:rank],size=(1,temporal_filter)),sigma=(0,0.5))
         else:
-            vhx0 = vh0[:npc]
-        ux0 = u0[:,:npc]
-        recs = ux0@np.diag(s0[:npc])@vhx0
-        score = np.sum(s0[:npc]**2)/np.sum(s0**2)*np.ones(len(signals))
+            vhx0 = vh0[:rank]
+        ux0 = u0[:,:rank]
+        recs = ux0@np.diag(s0[:rank])@vhx0
+        score = np.sum(s0[:rank]**2)/np.sum(s0**2)*np.ones(len(signals))
         
-        if np.sum(coherent_mask) > npc:
+        if np.sum(coherent_mask) > 2*rank:
             u,s,vh = np.linalg.svd(vecs_shifted[coherent_mask],False)
-            vhx = ndi.median_filter(vh[:npc],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:npc]
-            ux = u[:,:npc]
-            recs_coh = (vecs_shifted@vh[:npc].T)@vh[:npc]
-            score_coh = np.sum(s[:npc]**2)/np.sum(s**2)
+            vhx = ndi.median_filter(vh[:rank],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:rank]
+            ux = u[:,:rank]
+            recs_coh = (vecs_shifted@vh[:rank].T)@vh[:rank]
+            score_coh = np.sum(s[:rank]**2)/np.sum(s**2)
             recs = np.where(coherent_mask[:,None], recs_coh, recs)
             score[coherent_mask] = score_coh
             
@@ -474,6 +481,105 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=6,
     return out
 
 
+def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
+                       temporal_filter = None,
+                       mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+
+    #preproc = lambda y: core.rescale(y)
+
+    #tmp_signals = np.zeros()
+    tv = np.arange(L)
+
+    def _next_x_prediction(X,lam,Phi):
+        Xn = X.reshape(-1,1)
+        b = lstsq(Phi, Xn, rcond=None)[0]
+        Xnext =  (Phi@np.diag(lam)@b.reshape(-1,1)).real
+        return Xnext
+    #    return Xnext.T.reshape(f.shape)
+
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        patch = data[tsl]
+
+        X = patch.reshape(L,-1).T
+        #print(patch.shape, X.shape)
+
+        lam,Phi = dmdf_new(X,r=npc)
+
+        rec = np.array([_next_x_prediction(f,lam,Phi) for f in X.T])
+
+        #print(out[tsl].shape, patch.shape, rec.shape)
+        out[tsl] += rec.reshape(*patch.shape)
+        
+        score = 1.0
+        counts[sl] += score
+        
+    for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
+        for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/(1e-12+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out[:,r,c] = 0
+    return out
+
+
+
+
+def dmdf_new(X,Y=None, r=None,sort_explained=False):
+    if Y is None:
+        Y = X[:,1:]
+        X = X[:,:-1]
+    U,sv,Vh = np.linalg.svd(X,False)
+    if r is None:
+        r = min_ncomp(sv, X.shape) + 1
+    sv = sv[:r]
+    V = Vh[:r].conj().T
+    Uh = U[:,:r].conj().T
+    B = Y@V@(np.diag(1/sv))
+    
+    Atilde = Uh@B
+    lam, W = np.linalg.eig(Atilde)
+    Phi = B@W
+    #print(Vh.shape)
+    # approx to b
+    def _bPOD(i):
+        alpha1 =np.diag(sv[:r])@Vh[:r,i]
+        return np.linalg.lstsq(Atilde@W,alpha1,rcond=None)[0]
+    #bPOD = _bPOD(0)
+    stats = (None,None)
+    if sort_explained:
+        #proj_dmd = Phi.T.dot(X)
+        proj_dmd = np.array([_bPOD(i) for i in range(Vh.shape[1])])
+        dmd_std = proj_dmd.std(0)
+        dmd_mean = abs(proj_dmd).mean(0)
+        stats = (dmd_mean,dmd_std)
+        kind = np.argsort(dmd_std)[::-1]
+    else:
+        kind = np.arange(r)[::-1] # from slow to fast
+    Phi = Phi[:,kind]
+    lam = lam[kind]
+    #bPOD=bPOD[kind]
+    return lam, Phi#,bPOD,stats
+
+
 def threshold_object_size(mask, min_size):
     labels, nlab = ndi.label(mask)
     objs = ndi.find_objects(labels)
@@ -493,7 +599,7 @@ def percentile_th_frames(frames,plow=5):
         for c in range(sh[1]):
             v = frames[:,r,c]
             mu = medians[r,c]
-            out[r,c] = -np.percentile(v[v<mu],plow)
+            out[r,c] = -np.percentile(v[v<=mu],plow)
     return out
 
 
@@ -522,7 +628,7 @@ def opening_of_closing(m):
 def to_zscore_frames(frames):
     nsm = mad_std(frames, axis=0)
     biases = find_bias_frames(frames, 3, nsm)
-    return (frames-biases)/nsm
+    return np.where(nsm>1e-5,(frames-biases)/nsm,0)
 
 
 def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
@@ -537,6 +643,8 @@ def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
         print('Done percentile filters')
 
     mf_frames = to_zscore_frames(mf_frames)
+    mf_frames = np.clip(mf_frames, *np.percentile(mf_frames, (0.5,99.5)))
+    #return mf_frames
     
     th = percentile_th_frames(mf_frames,plow)
     mask = (mf_frames > th)*(ndi.gaussian_filter(mf_frames, (smooth,0.5,0.5))>th)
@@ -679,44 +787,44 @@ def loc_in_patch(loc,patch):
     sl = patch[1]
     return np.all([s.start <= l < s.stop for l,s in zip(loc, sl)])
 
-def _baseline_windowed_pca(data,stride=4, nhood=7, ncomp=10,
-                          smooth = 60,
-                          walpha=1.0,
-                          mask_of_interest=None):
-    sh = data.shape
-    if mask_of_interest is None:
-        mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    mask = mask_of_interest
-    counts = np.zeros(sh[1:])
-    acc = []
-    knn_count = 0
-    cluster_count = 0
-    Ln = (2*nhood+1)**2
-    out_data = np.zeros(sh,dtype=_dtype_)
-    print(out_data.shape)
-    counts = np.zeros(sh[1:])
-    empty_slice = (slice(None),)
+# def _baseline_windowed_pca(data,stride=4, nhood=7, ncomp=10,
+#                           smooth = 60,
+#                           walpha=1.0,
+#                           mask_of_interest=None):
+#     sh = data.shape
+#     if mask_of_interest is None:
+#         mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+#     mask = mask_of_interest
+#     counts = np.zeros(sh[1:])
+#     acc = []
+#     knn_count = 0
+#     cluster_count = 0
+#     Ln = (2*nhood+1)**2
+#     out_data = np.zeros(sh,dtype=_dtype_)
+#     print(out_data.shape)
+#     counts = np.zeros(sh[1:])
+#     empty_slice = (slice(None),)
 
-    for r in range(nhood,sh[1]-nhood,stride):
-        for c in range(nhood,sh[2]-nhood,stride):
-            sys.stderr.write('\rprocessing pixel %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
-            if mask[r,c]:
-                kcenter = 2*nhood*(nhood+1)
-                sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
-                patch = data[(slice(None),)+sl]
-                pshape = patch.shape
-                patch = patch.reshape(sh[0],-1).T               
-                Xc = patch.mean(0)
-                u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
-                points = u[:,:ncomp]
-                #pc_signals = array([medismooth(s) for s in points.T])
-                pc_signals = np.array([multi_scale_simple_baseline(s)  for s in points.T])
-                signals = (pc_signals.T@np.diag(s[:ncomp])@vh[:ncomp] + Xc).T
-                out_data[empty_slice+sl] += signals.reshape(pshape)
-                counts[sl] += np.ones(pshape[1:],dtype=int)
+#     for r in range(nhood,sh[1]-nhood,stride):
+#         for c in range(nhood,sh[2]-nhood,stride):
+#             sys.stderr.write('\rprocessing pixel %05d/%d'%(r*sh[1] + c+1, np.prod(sh[1:])))
+#             if mask[r,c]:
+#                 kcenter = 2*nhood*(nhood+1)
+#                 sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+#                 patch = data[(slice(None),)+sl]
+#                 pshape = patch.shape
+#                 patch = patch.reshape(sh[0],-1).T               
+#                 Xc = patch.mean(0)
+#                 u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
+#                 points = u[:,:ncomp]
+#                 #pc_signals = array([medismooth(s) for s in points.T])
+#                 pc_signals = np.array([multi_scale_simple_baseline(s)  for s in points.T])
+#                 signals = (pc_signals.T@np.diag(s[:ncomp])@vh[:ncomp] + Xc).T
+#                 out_data[empty_slice+sl] += signals.reshape(pshape)
+#                 counts[sl] += np.ones(pshape[1:],dtype=int)
             
-    out_data /= (1e-12 + counts)
-    return out_data
+#     out_data /= (1e-12 + counts)
+#     return out_data
 
 
 def combine_weighted_signals(collection,shape):
@@ -1578,7 +1686,9 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     fsx.meta['channel']='-'.join(['newrec4',kind])
     return fsx
 
-def svd_denoise_tslices(frames, twindow=50,nhood=5,npc=5,
+def svd_denoise_tslices(frames, twindow=50,
+                        nhood=5,
+                        npc=5,
                         mask_of_interest=None,
                         th = 0.05,
                         verbose=True,
@@ -1599,7 +1709,7 @@ def svd_denoise_tslices(frames, twindow=50,nhood=5,npc=5,
     
     out = np.zeros(frames.shape)
     for k,ts,m in zip(range(L), tslices, mask_list):
-        out[ts] += denoiser(frames[ts], mask_of_interest=m, **denoiser_kw)
+        out[ts] += denoiser(frames[ts], mask_of_interest=m, nhood=nhood, npc=npc, **denoiser_kw)
         counts[ts] +=1
         if verbose:
             sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
