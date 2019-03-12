@@ -291,6 +291,9 @@ from imfun import components
 def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                        temporal_filter=1,
                        spatial_filter=1,
+                       threshold_time_signals=False,
+                       smooth_baseline=False,
+                       keep_baseline=True,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -298,6 +301,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
+    out_b = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],_dtype_)
     if mask_of_interest is None:
         mask=np.ones(counts.shape,bool)
@@ -325,12 +329,36 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         vhx_threshs = [mad_std(f) for f in vh_images]
         vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         vhx = vhx.reshape(rank,len(vh[0]))
+
+        # 13.03.19 -- доделать сохранение "базовой линии" на более свежую голову
+        if threshold_time_signals or keep_baseline or smooth_baseline:
+            svd_signals = ux.T
+            if smooth_baseline:
+                biases = np.array([simple_baseline(v,50,smooth=50) for v in svd_signals])
+            else:
+                biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
+
+            svd_signals_c = svd_signals - biases
+
+            signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in svd_signals_c])
+            signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in svd_signals_c])
+            signals_filtered = signals_fplus + signals_fminus
+            if keep_baseline:
+                signals_filtered +=  biases
+                
+            ux = signals_filtered.T
+            
+        
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:rank]
         proj = ux@np.diag(s[:rank])@vhx[:rank]
         score = np.sum(s[:rank]**2)/np.sum(s**2)
         #score = 1
-        out[tsl] += score*proj.reshape(w_sh)
+        rec  = proj.reshape(w_sh)
+        if keep_baseline:
+            # we possibly shift the baseline level due to thresholding of components
+            rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0)) 
+        out[tsl] += score*rec
         counts[sl] += score
         
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
@@ -481,6 +509,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
     return out
 
 
+
 def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
                        temporal_filter = None,
                        mask_of_interest=None):
@@ -524,6 +553,86 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
 
         #print(out[tsl].shape, patch.shape, rec.shape)
         out[tsl] += rec.reshape(*patch.shape)
+        
+        score = 1.0
+        counts[sl] += score
+        
+    for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
+        for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out = out/(1e-12+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out[:,r,c] = 0
+    return out
+
+from sklearn import decomposition as skd
+from skimage import filters as skf
+def _patch_denoise_nmf(data,stride=2, nhood=5, ncomp=None,
+                       smooth_baseline=False,
+                       max_ncomp=None,
+                       temporal_filter = None,
+                       mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    if max_ncomp is None:
+        max_ncomp = 0.25*(2*nhood+1)**2
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+
+    #preproc = lambda y: core.rescale(y)
+
+    #tmp_signals = np.zeros()
+    tv = np.arange(L)
+
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        patch = data[tsl]
+        lift = patch.min(0)
+
+        patch = patch-lift # precotion against negative values in data
+        
+        X = patch.reshape(L,-1)
+        u,s,vh = svd(X,False)
+        rank = min(max_ncomp, min_ncomp(s,X.shape) + 1) if ncomp is None else ncomp
+        if ncomp is None:
+            sys.stderr.write('  rank: %d  '%rank)
+
+        d = skd.NMF(rank,l1_ratio=0.95,init='nndsvdar')#,beta_loss='kullback-leibler',solver='mu')
+        nmf_signals = d.fit_transform(X).T
+        nmf_comps = np.array([m*opening_of_closing(m > 0.5*skf.threshold_otsu(m)) for m in d.components_])
+
+
+        #nmf_biases = np.array([find_bias(v) for v in nmf_signals]).reshape(-1,1)
+        #nmf_biases = np.array([multi_scale_simple_baseline(v) for v in nmf_signals])
+        if smooth_baseline:
+            nmf_biases = np.array([simple_baseline(v,50,smooth=50) for v in nmf_signals])
+        else:
+            nmf_biases = np.array([find_bias(v,ns=mad_std(v)) for v in nmf_signals]).reshape(-1,1)
+        nmf_signals_c = nmf_signals - nmf_biases
+
+        nmf_signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in nmf_signals_c])
+        nmf_signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in nmf_signals_c])
+        nmf_signals_filtered = nmf_signals_fplus + nmf_signals_fminus + nmf_biases
+
+        rec = nmf_signals_filtered.T@nmf_comps
+        rec_frames = rec.reshape(*patch.shape)
+        rec_frames += find_bias_frames(patch-rec_frames,3,mad_std(patch,0)) # we possibly shift the baseline level due to thresholding of components
+
+        #print(out[tsl].shape, patch.shape, rec.shape)
+        out[tsl] += rec_frames + lift
         
         score = 1.0
         counts[sl] += score
@@ -914,7 +1023,7 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
 
 def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
     mu = min(np.median(v),0)
-    low = np.percentile(v[v<mu], percentile_low)
+    low = np.percentile(v[v<=mu], percentile_low)
     vs = smoother(v, tau)
     return vs >= -low
     
@@ -1081,6 +1190,21 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5):
     #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
     outliers ^= closing_of_opening(outliers)
     return np.where(outliers, medfilt, frames)
+
+def adaptive_median_filter_2d(img,th=5, smooth=5):
+    medfilt = ndi.median_filter(img, smooth)
+    details = img - medfilt
+    md = np.median(details)
+    sd = np.median(abs(details - md))*1.4826
+    #sdmap = ucats.mad_std(frames,axis=0)
+    outliers = np.abs(details-md) > th*sd
+    #s = np.zeros((3,3,3)); 
+    #s[:,1,1] = 1
+    #s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
+    #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
+    outliers ^= closing_of_opening(outliers)
+    return np.where(outliers, medfilt, img)
+
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:
