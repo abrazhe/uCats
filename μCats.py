@@ -293,7 +293,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                        spatial_filter=1,
                        threshold_time_signals=False,
                        smooth_baseline=False,
-                       keep_baseline=True,
+                       keep_baseline=False,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -321,7 +321,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         if rank is None:
-            rank = min_ncomp(s, patch.shape)
+            rank = min_ncomp(s, patch.shape)+1
             sys.stderr.write(' svd rank: %02d'% rank)
         ux = ndi.median_filter(u[:,:rank],size=(temporal_filter,1))
         vh_images = vh[:rank].reshape(-1,*w_sh[1:])
@@ -372,6 +372,107 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
             if counts[r,c] == 0:
                 out[:,r,c] = 0
     return out
+
+def block_svd_denoise_and_separate(data, stride=2, nhood=5,
+                                   ncomp=None,
+                                   spatial_filter=1,
+                                   baseline_smoothness=100,
+                                   baseline_post_smooth=10,
+                                   mask_of_interest=None):
+    sh = data.shape
+    L = sh[0]
+    
+    #if mask_of_interest is None:
+    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+    out_signals = np.zeros(sh,_dtype_)
+    out_baselines = np.zeros(sh,_dtype_)
+    counts = np.zeros(sh[1:],_dtype_)
+    if mask_of_interest is None:
+        mask=np.ones(counts.shape,bool)
+    else:
+        mask = mask_of_interest
+    Ln = (2*nhood+1)**2
+    
+    def _process_loc(r,c):
+        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        tsl = (slice(None),)+sl
+
+        patch_frames = data[tsl]
+        w_sh = patch_frames.shape
+
+        patch = patch_frames.reshape(sh[0],-1)
+
+        if not(np.any(patch)):
+            out_signals[tsl] += 0
+            out_baselines[tsl] += 0
+            counts[sl] += 0
+            return
+        # (patch is now Nframes x Npixels, u will hold temporal components)
+        u,s,vh = np.linalg.svd(patch,full_matrices=False)
+        if ncomp is None:
+            rank = min_ncomp(s, patch.shape)+1
+            sys.stderr.write(' svd rank: %02d'% rank)
+        else:
+            rank = ncomp
+
+        ux = u[:,:rank]
+        
+        vh_images = vh[:rank].reshape(-1,*w_sh[1:])
+        vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        vhx_threshs = [mad_std(f) for f in vh_images]
+        vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        vhx = vhx.reshape(rank,len(vh[0]))
+
+        svd_signals = ux.T
+        if baseline_smoothness:
+            biases = np.array([simple_baseline(v,50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
+            #biases = np.array([smoothed_medianf(v, smooth=5, wmedian=int(baseline_smoothness)) for v in svd_signals])
+        else:
+            biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
+            biases = np.zeros_like(svd_signals)+biases
+
+        svd_signals_c = svd_signals - biases
+
+        signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in svd_signals_c])
+        signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in svd_signals_c])
+        signals_filtered = signals_fplus + signals_fminus
+            
+        ux = signals_filtered.T
+        ux_biases = biases.T
+        
+        #print('\n', patch.shape, u.shape, vh.shape)
+        #ux = u[:,:rank]
+        signals = ux@np.diag(s[:rank])@vhx[:rank]
+        baselines = ux_biases@np.diag(s[:rank])@vhx[:rank]
+        
+        score = np.sum(s[:rank]**2)/np.sum(s**2)
+        #score = 1
+        rec  = signals.reshape(w_sh)
+        rec_baselines = baselines.reshape(w_sh)
+        # we possibly shift the baseline level due to thresholding of components
+        ##rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
+        rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
+        out_signals[tsl] += score*rec
+        out_baselines[tsl] += score*rec_baselines
+        counts[sl] += score
+        
+    for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
+        for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            if mask[r,c]:
+                _process_loc(r,c)
+    out_signals = out_signals/(1e-6+counts[None,:,:])
+    out_baselines = out_baselines/(1e-6+counts[None,:,:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            if counts[r,c] == 0:
+                out_signals[:,r,c] = 0
+                out_baselines[:,r,c] = 0
+    if baseline_post_smooth > 0:
+        out_baselines = ndi.gaussian_filter(out_baselines, (baseline_post_smooth, 0, 0))
+    return out_signals,out_baselines
+
+
 
 def locations(shape):
     """ all locations for a shape; substitutes nested cycles"""
@@ -1821,7 +1922,10 @@ def svd_denoise_tslices(frames, twindow=50,
     
     L = len(frames)
     sh =  frames[0].shape
-    tslices = [slice(i, i+twindow) for i in range(0,L-50,twindow//2)] + [slice(L-twindow, L)]
+    if twindow < L:
+        tslices = [slice(i, i+twindow) for i in range(0,L-twindow,twindow//2)] + [slice(L-twindow, L)]
+    else:
+        tslices = [slice(0, L)]
     counts = np.zeros(L)
     
     if mask_of_interest is None:
@@ -1840,8 +1944,46 @@ def svd_denoise_tslices(frames, twindow=50,
         
     return out/counts[:,None,None]
 
+def block_svd_separate_tslices(frames, twindow=200,
+                               nhood=5,
+                               ncomp=None,
+                               mask_of_interest=None,
+                               th = 0.05,
+                               verbose=True,
+                               **denoiser_kw):
+    
+    L = len(frames)
+    sh =  frames[0].shape
 
-def make_enh5(dfof, twindow=50, nhood=5,stride=2,temporal_filter=3, verbose=False):
+    if twindow < L:
+        tslices = [slice(i, i+twindow) for i in range(0,L-twindow,twindow//2)] + [slice(L-twindow, L)]
+    else:
+        tslices = [slice(0, L)]
+    counts = np.zeros(L)
+
+
+    
+    if mask_of_interest is None:
+        mask_list = (np.ones(sh) for t in tslices)
+    elif np.ndim(mask_of_interest) == 2:
+        mask_list = (mask_of_interest for  t in tslices)
+    else:
+        mask_list = (mask_of_interest[t].mean(0)>th for t in tslices)
+    
+    out_s = np.zeros(frames.shape)
+    out_b = np.zeros(frames.shape)
+    for k,ts,m in zip(range(L), tslices, mask_list):
+        s,b = block_svd_denoise_and_separate(frames[ts], mask_of_interest=m, nhood=nhood, ncomp=ncomp, **denoiser_kw)
+        out_s[ts] += s
+        out_b[ts] += b
+        counts[ts] += 1
+        if verbose:
+            sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
+        
+    return out_s/counts[:,None,None],out_b/counts[:,None,None]
+
+
+def make_enh5(dfof, twindow=50, nhood=5, stride=2, temporal_filter=3, verbose=False):
     from imfun import fseq
     amask = activity_mask_median_filtering(dfof, nw=7,verbose=verbose)
     nsf = mad_std(dfof, axis=0)

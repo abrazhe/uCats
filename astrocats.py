@@ -14,6 +14,7 @@ import numpy as np
 from numpy import *
 
 from scipy import ndimage,signal
+from scipy import ndimage as ndi
 
 import matplotlib
 matplotlib.use('Agg')
@@ -187,30 +188,21 @@ def process_record(fs, fname, series, args):
         frames = fsc.data.astype(np.float32)
 
     # II. Denoising frames
-
-    print('Denoising frames via truncated SVD with shifts')
+    print('Denoising frames and separating background via block-SVD ')
     #todo: take parameters from arguments to the script
-    frames_dn = ucats.svd_denoise_tslices(frames, twindow=100,nhood=7,stride=4,
-                                          denoiser=ucats._patch_pca_denoise_with_shifts,
-                                          temporal_filter=3, npc=7)
-    frames_dn = frames_dn.astype(np.float32)
-    
-    # III. Calculate baseline
-    print('Calculating dynamic fluorescence baseline for motion-corrected data')
-    smooth,mw = len(fsc)//10, len(fsc)//5
-    #benh = ucats.calculate_baseline_pca(fsc.data, smooth=smooth,medianw=mw)
-    #benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
-    benh = ucats.calculate_baseline_pca_asym(frames_dn, niter=20, verbose=True).astype(np.float32)
-    benh[benh==0] = np.min(benh[benh>0])
+    frames_dn, benh = ucats.block_svd_separate_tslices(frames, twindow=200,nhood=5,stride=3, baseline_smoothness=100)
     benh = fseq.from_array(benh)
-    h5f = None
+    benh.meta['channel'] = 'F baseline'
+    
+    # III. Calculate ΔF/F
+    print('Calculating relative fluorescence changes')
     detected_name = nametag+'-detected.h5'
     if args.no_skip_dark_areas:
         print('calculating well-stained and poorly-stained areas')
         colored_mask = dark_area_mask(benh.data.mean(0))
     else:
         print('no color mask asked for')
-        colored_mask = np.ones(benh.frame_shape, np.bool)
+        colored_mask = np.ones(benh[0].shape, np.bool)
 
     f,ax = plt.subplots(1,1,figsize=(8,8));
     ax.imshow(benh.data.mean(0),cmap='gray')
@@ -247,15 +239,26 @@ def process_record(fs, fname, series, args):
         #                      pipeline_kw=pipeline_kwargs,
         #                      labeler_kw=labeler_kwargs,
         #                      mask_of_interest=colored_mask)
-        dfof = (frames_dn/benh.data-1.0).astype(np.float32)
-        min_clip = min(0, -np.percentile(dfof,5))
-        dfof[dfof<min_clip] = min_clip
+        dfof = (frames_dn/benh.data).astype(np.float32)
+        dfof0 = (frames/benh.data - 1).astype(np.float32)
+
+        nsd0 = ucats.mad_std(dfof0, axis=0)
+        th = ucats.percentile_th_frames(dfof,args.detection_low_percentile)
+        mask_simple1 = (dfof > th)*(dfof>0.05)
+        mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
+        mask_simple1 = array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+        print(' -- Done percentile-based masks ')
         
-        nsf_2 = ucats.mad_std(frames/benh-1, axis=0)
-        mask_simple = dfof > nsf_2
-        mask_simple = np.array([ucats.cleanup_mask(m,2,5) for m in mask_simple])
-        fsx = fseq.from_array(dfof*mask_simple)
-        fsx.meta['channel'] = 'newrec5'
+        mask_simple2 = (dfof>nsd0)
+        mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
+        mask_simple2 = array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
+        print(' -- Done s.d.-based masks ')
+        
+        mask_final = ucats.select_overlapping(mask_simple2, mask_simple1)
+        print(' -- Combined the two  masks ')
+        
+        fsx = fseq.from_array(dfof*mask_final)
+        fsx.meta['channel'] = 'newrec6'
         #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
         #fsx = fseq.from_array(fsx)
         #fsx.meta['channel'] = '-newrec5-medians-'
