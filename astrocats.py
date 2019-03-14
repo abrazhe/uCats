@@ -83,20 +83,12 @@ def main():
         '--do-oscillations': dict(action='store_true'),
         '--detection-do-adaptive-median-filter': dict(default=1,type=bool,
                                                       help='whether to pre-filter data with an adaptive median filter'),
-        '--detection-do-jitter':dict(default=0,type=bool,
-                                     help='whether to use local jitter in detection algorithm;\
- reduces false positive ratio, but can lead to missed events'),
         '--detection-low-percentile':dict(default=1.5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
-        '--detection-tau-smooth':dict(default=2., type=float,
-                                      help='smoothing in detection, make larger for less false positives,\
- make smaller for detection of smaller events'),
         '--detection-loc-nhood':dict(default=2,type=int),
-        '--detection-smoothed-reconstruction':dict(default=1,type=bool),
         '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
         '--signal-patch-denoise-temporal-size':dict(default=1,type=int),        
-        '--signal-patch-denoise-npc':dict(default=5,type=int),
-        '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
+        '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-peak-threshold':dict(default=0.1, type=float,help='event must contain a peak with at least this ΔF/F value'),
         '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
         '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
@@ -168,6 +160,7 @@ def process_lif_file(fname, args,min_frames=600):
 def process_record(fs, fname, series, args):
     nametag = '-'.join((fname,series,args.suff))
     print('nametag is:', nametag)
+    h5f  = None
     # II.  Stabilize motion artifacts
     fsc,_ = stabilize_motion(fs, args,nametag)
 
@@ -217,6 +210,7 @@ def process_record(fs, fname, series, args):
         print('loading existing results of event detection:', detected_name)
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
+        h5f = fsx.h5file
     else:
         print("Calculating 'augmented' data")        #print(' - denoising ΔF/F frames')
         #dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
@@ -409,7 +403,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     # Median filter. TODO: make optional via arguments
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
-    fsm_filtered = ndimage.median_filter(fsm[:], size=3)
+    fsm_filtered = ndimage.median_filter(fsm[:], size=3).astype(ucats._dtype_)
 
     # Removing global trend
     fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
@@ -429,6 +423,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         if args.verbose>1: print('done PCA-based denoising')
     else: pcf = None
 
+    fsm_filtered = fsm_filtered.astype(ucats._dtype_)
+    
     
     #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
     #fsm_filtered = fseq.from_array(fsm_filtered[:])
@@ -470,7 +466,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
                                               njobs=args.ncpu,                                              
                                               **model_params)
             warp_history.append(warps)
-            newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu)
+            newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu).astype(ucats._dtype_)
             mx_warps = ucats.max_shifts(warps, args.verbose)            
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
