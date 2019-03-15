@@ -1256,18 +1256,18 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5):
-    medfilt = ndi.median_filter(frames, [tsmooth,ssmooth,ssmooth])
+def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True):
+    medfilt = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
     details = frames - medfilt
-    mdmap = np.median(details, axis=0)
-    sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
-    #sdmap = ucats.mad_std(frames,axis=0)
-    outliers = np.abs(details-mdmap) > th*sdmap
-    #s = np.zeros((3,3,3)); 
-    #s[:,1,1] = 1
+    #mdmap = np.median(details, axis=0)
+    #sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
+    sdmap = mad_std(frames,axis=0)
+    outliers = np.abs(details) > th*sdmap
+    #s = np.zeros((3,3,3)); s[:,1,1] = 1
     s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
     #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
-    outliers ^= closing_of_opening(outliers)
+    if keep_clusters:
+        outliers ^= closing_of_opening(outliers)
     return np.where(outliers, medfilt, frames)
 
 def adaptive_median_filter_2d(img,th=5, smooth=5):
