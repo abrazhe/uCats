@@ -291,9 +291,6 @@ from imfun import components
 def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                        temporal_filter=1,
                        spatial_filter=1,
-                       threshold_time_signals=False,
-                       smooth_baseline=False,
-                       keep_baseline=False,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -301,7 +298,6 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
-    out_b = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],_dtype_)
     if mask_of_interest is None:
         mask=np.ones(counts.shape,bool)
@@ -322,31 +318,13 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         if rank is None:
             rank = min_ncomp(s, patch.shape)+1
-            sys.stderr.write(' svd rank: %02d'% rank)
+            sys.stderr.write(' | svd rank: %02d  '% rank)
         ux = ndi.median_filter(u[:,:rank],size=(temporal_filter,1))
         vh_images = vh[:rank].reshape(-1,*w_sh[1:])
         vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         vhx_threshs = [mad_std(f) for f in vh_images]
-        vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        vhx = np.array([np.where(np.abs(f-fx) > th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         vhx = vhx.reshape(rank,len(vh[0]))
-
-        # 13.03.19 -- доделать сохранение "базовой линии" на более свежую голову
-        if threshold_time_signals or keep_baseline or smooth_baseline:
-            svd_signals = ux.T
-            if smooth_baseline:
-                biases = np.array([simple_baseline(v,50,smooth=50) for v in svd_signals])
-            else:
-                biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
-
-            svd_signals_c = svd_signals - biases
-
-            signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in svd_signals_c])
-            signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in svd_signals_c])
-            signals_filtered = signals_fplus + signals_fminus
-            if keep_baseline:
-                signals_filtered +=  biases
-                
-            ux = signals_filtered.T
             
         
         #print('\n', patch.shape, u.shape, vh.shape)
@@ -355,15 +333,15 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         score = np.sum(s[:rank]**2)/np.sum(s**2)
         #score = 1
         rec  = proj.reshape(w_sh)
-        if keep_baseline:
-            # we possibly shift the baseline level due to thresholding of components
-            rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0)) 
+        #if keep_baseline:
+        #    # we possibly shift the baseline level due to thresholding of components
+        #    rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0)) 
         out[tsl] += score*rec
         counts[sl] += score
         
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
-            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d '%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
                 _process_loc(r,c,npc)
     out = out/(1e-12+counts[None,:,:])
@@ -1913,7 +1891,7 @@ def make_enh4(frames, pipeline=simple_pipeline_,
 
 def svd_denoise_tslices(frames, twindow=50,
                         nhood=5,
-                        npc=5,
+                        npc=None,
                         mask_of_interest=None,
                         th = 0.05,
                         verbose=True,
