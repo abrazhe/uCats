@@ -92,6 +92,11 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     #signals =  array([d[(slice(None),)+s].sum(-1).sum(-1)/prod(d[0][s].shape) for s in squares])
     #return [(v,sq,w) for v,sq in zip(signals, squares)]
 
+
+def clip_outliers(m, plow=0.5, phigh=99.5):
+    px = np.percentile(m, (plow, phigh))
+    return np.clip(m, *px)
+    
 def weight_counts(collection,sh):
     counts = np.zeros(sh)
     for v,s,w in collection:
@@ -1256,7 +1261,7 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True):
+def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True,reverse=True):
     medfilt = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
     details = frames - medfilt
     #mdmap = np.median(details, axis=0)
@@ -1268,22 +1273,23 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True)
     #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
     if keep_clusters:
         outliers ^= closing_of_opening(outliers)
-    return np.where(outliers, medfilt, frames)
+    if reverse:
+        return np.where(outliers,frames,medfilt)
+    else:
+        return np.where(outliers, medfilt, frames)
 
-def adaptive_median_filter_2d(img,th=5, smooth=5):
-    medfilt = ndi.median_filter(img, smooth)
-    details = img - medfilt
-    md = np.median(details)
-    sd = np.median(abs(details - md))*1.4826
-    #sdmap = ucats.mad_std(frames,axis=0)
-    outliers = np.abs(details-md) > th*sd
-    #s = np.zeros((3,3,3)); 
-    #s[:,1,1] = 1
-    #s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
-    #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
-    outliers ^= closing_of_opening(outliers)
-    return np.where(outliers, medfilt, img)
 
+def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, reverse=False, keep_clusters=True):
+    imgf = smoother(img, smooth)
+    details = img - imgf
+    sd = mad_std(img)
+    outliers = np.abs(details) > th*sd
+    if keep_clusters:
+        outliers ^= closing_of_opening(outliers)
+    if reverse:
+        outliers = ~outliers        
+    return np.where(outliers, imgf, img)
+    
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:

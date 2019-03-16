@@ -276,9 +276,10 @@ def process_record(fs, fname, series, args):
     # VI.  Make movies
     if args.verbose: print('Making movies of detected activity')        
     #fsout = fseq.FStackColl([fsc,  fsx])
-    frames_out = benh.data*(asarray(fsx.data,float32)+1)
+    #frames_out = benh.data*(asarray(fsx.data,float32)+1)
+    frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
-    fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
+    #fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
     p = ui.Picker(fsout); p.start()
     p0 = ui.Picker(fseq.FStackColl([fsc]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)
@@ -389,12 +390,12 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     print('warps name:', warps_name)
     fsm_filtered = None
     newframes = None
-    
+
+    # If reusing previously calculating warps and want to re-make the movie
     if os.path.exists(warps_name) and (not args.with_motion_movies):        
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
         fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
         return fsc, final_warps
-    
     
 
     if args.verbose:
@@ -403,23 +404,37 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     # Median filter. TODO: make optional via arguments
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
-    fsm_filtered = ndimage.median_filter(fsm[:], size=3).astype(ucats._dtype_)
-
+    #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
+    fsm_filtered = ucats.clip_outliers(fsm[:]).astype(ucats._dtype_)
     # Removing global trend
-    fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
+    #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
 
     
     #fsm.frame_filters = []
-    if args.verbose > 1: print('done spatial median filter')
+    #if args.verbose > 1: print('done spatial median filter')
 
-        
+    from imfun.core import fnutils
     if args.pca_denoise:
-        pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//50+5)
+        pcf = components.pca.PCA_frames(fsm_filtered**0.5, npc=len(fsm)//50+5)
         vh_frames = pcf.vh.reshape(-1, *pcf.sh)
-        smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
-        pcf.vh = array([[smooth_and_detrend(f) for f in vh_frames]]).reshape(pcf.vh.shape)
+
+        #process_spatial_component = fnutils.flcompose(
+        #    lambda f: ucats.adaptive_median_filter_2d(f,th=2,smooth=25,reverse=True),
+        #    lambda f: ucats.adaptive_median_filter_2d(f,th=5,smooth=3),
+        #    lambda f: ucats.l2spline(f,0.5))
+        process_spatial_component = fnutils.flcompose(
+            lambda f: ucats.adaptive_filter_2d(f,th=1.5,smooth=25,reverse=True,
+                                               keep_clusters=False,
+                                               smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth)),
+            lambda f: ucats.l2spline(f,1.0),
+            lambda f: f-ucats.l2spline(f, 30),
+        )
+        #smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
+        coords_s = array([ucats.smoothed_medianf(v,0.5,3) for v in pcf.coords.T]).T
+        pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
         pcf.tsvd.components_ = pcf.vh
-        fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + smooth_and_detrend(pcf.mean_frame)
+        fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(fsm_filtered),*pcf.sh) + process_spatial_component(pcf.mean_frame)
+        fsm_filtered = fsm_filtered**2
         if args.verbose>1: print('done PCA-based denoising')
     else: pcf = None
 
