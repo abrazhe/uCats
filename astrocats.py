@@ -405,7 +405,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
     #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
-    fsm_filtered = ucats.clip_outliers(fsm[:]).astype(ucats._dtype_)
+    fsm_filtered = ucats.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
     # Removing global trend
     #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
 
@@ -434,7 +434,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
         pcf.tsvd.components_ = pcf.vh
         fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(fsm_filtered),*pcf.sh) + process_spatial_component(pcf.mean_frame)
-        fsm_filtered = fsm_filtered**2
+        fsm_filtered = fsm_filtered.astype(ucats._dtype_)
         if args.verbose>1: print('done PCA-based denoising')
     else: pcf = None
 

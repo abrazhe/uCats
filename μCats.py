@@ -359,6 +359,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
                                    spatial_filter=1,
+                                   spatial_filter_th=2.5,
                                    baseline_smoothness=100,
                                    baseline_post_smooth=10,
                                    mask_of_interest=None):
@@ -401,9 +402,17 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         ux = u[:,:rank]
         
         vh_images = vh[:rank].reshape(-1,*w_sh[1:])
-        vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
-        vhx_threshs = [mad_std(f) for f in vh_images]
-        vhx = np.array([np.where(f>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        #vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
+        #vhx_threshs = [mad_std(f) for f in vh_images]
+        #vhx = np.array([np.where(np.abs(f-fx)>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
+        #vhx = adaptive_median_filter(vh_images, th=spatial_filter_th, tsmooth=1, ssmooth=spatial_filter,
+        #                             reverse=False,keep_clusters=False)
+        if spatial_filter > 1:
+            vhx = np.array([adaptive_filter_2d(f,th=spatial_filter_th,smooth=spatial_filter,reverse=True) for f in vh_images])
+            # attention: 'reverse=True' is experimental here! This is done to sparsify spatial components, but requres further
+            # thought...
+        else:
+            vhx = vh_images
         vhx = vhx.reshape(rank,len(vh[0]))
 
         svd_signals = ux.T
@@ -428,8 +437,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         signals = ux@np.diag(s[:rank])@vhx[:rank]
         baselines = ux_biases@np.diag(s[:rank])@vhx[:rank]
         
-        score = np.sum(s[:rank]**2)/np.sum(s**2)
-        #score = 1
+        #score = np.sum(s[:rank]**2)/np.sum(s**2)
+        score = 1
+        
         rec  = signals.reshape(w_sh)
         rec_baselines = baselines.reshape(w_sh)
         # we possibly shift the baseline level due to thresholding of components
@@ -1261,7 +1271,7 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True,reverse=True):
+def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False, reverse=False):
     medfilt = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
     details = frames - medfilt
     #mdmap = np.median(details, axis=0)
@@ -1279,7 +1289,7 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=True,
         return np.where(outliers, medfilt, frames)
 
 
-def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, reverse=False, keep_clusters=True):
+def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False):
     imgf = smoother(img, smooth)
     details = img - imgf
     sd = mad_std(img)
