@@ -362,7 +362,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    min_comps = 1,
                                    spatial_filter=1,
                                    spatial_filter_th=5,
-                                   spatial_min_cluster_size=9,
+                                   spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
                                    baseline_post_smooth=10,
                                    detection_percentile_low=5,
@@ -382,7 +382,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
     Ln = (2*nhood+1)**2
     
     def _process_loc(r,c):
-        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+        sl = (slice(r-nhood,r+nhood), slice(c-nhood,c+nhood)) # don't need center here
         tsl = (slice(None),)+sl
 
         patch_frames = data[tsl]
@@ -414,8 +414,10 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         if spatial_filter > 1:
             pipeline = fnutils.flcompose(#lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
                                          #                             smooth=spatial_filter),
-                                         lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
-                                                                      smooth=spatial_filter,reverse=True,
+                                         lambda f: adaptive_filter_2d(f,
+                                                                      th=spatial_filter_th,
+                                                                      smooth=spatial_filter,
+                                                                      reverse=True,
                                                                       keep_clusters=True,
                                                                       min_cluster_size=spatial_min_cluster_size
                                          ),
@@ -429,7 +431,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         svd_signals = ux.T
         if baseline_smoothness:
-            biases = np.array([simple_baseline(v,50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
+            biases = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
             #biases = np.array([smoothed_medianf(v, smooth=5, wmedian=int(baseline_smoothness)) for v in svd_signals])
         else:
             biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
@@ -437,10 +439,11 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         svd_signals_c = svd_signals - biases
         
-        labeler = functools.partial(percentile_label, percentile_low=detection_percentile_low, tau=1.5)
+        labeler = partial(percentile_label, percentile_low=detection_percentile_low, tau=2)
+        #labeler = partial(percentile_label, percentile_low=25)
 
         signals_fplus = np.array([v*labeler(v) for v in svd_signals_c])
-        signals_fminus = np.array([v*labeler(v) for v in svd_signals_c])
+        signals_fminus = np.array([v*labeler(-v) for v in svd_signals_c])
         signals_filtered = signals_fplus + signals_fminus
             
         ux = signals_filtered.T
@@ -1129,14 +1132,6 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
         out = l2spline(out, s=2*hw)
     return out
 
-def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
-    mu = min(np.median(v),0)
-    low = np.percentile(v[v<=mu], percentile_low)
-    vs = smoother(v, tau)
-    return vs >= -low
-    
-
-
 def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
     """
     Estimate time-varying baseline in 1D signal by first finding fast significant 
@@ -1202,59 +1197,7 @@ def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160
     return  l2spline(low_env, np.min(smooth_levels))
 
 
-def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True,
-                     noise_sigma = None,
-                     correct_bias = True):
-                     
-    """
-    Detect and reconstruct Ca-transients in 1D signal
-    """
-    if not any(y):
-        return np.zeros_like(y)
-    
-    ns = rolling_sd_pd(y) if noise_sigma is None else noise_sigma
 
-    if correct_bias:
-        bias = find_bias(y,th=1.5,ns=ns)
-        #low = y < np.median(y) + 1.5*ns
-        #if not any(low):
-        #    low = np.ones(len(y),np.bool)
-        #    bias = np.median(y[low])
-        #    if bias > 0:
-        #        y = y-bias
-        y = y-bias
-    vn = y/ns
-    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
-    if labeler_kw is None:
-        labeler_kw={}
-    labels = labeler(vn, **labeler_kw)
-    if not any(labels):
-        return np.zeros_like(y)
-    return sp_rec_with_labels(vn, labels,with_plots=False,return_smoothed=smoothed_rec)*ns
-
-
-
-
-
-#from multiprocessing import Pool
-from pathos.pools import ProcessPool as Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline_,pipeline_kw=None,njobs=4):
-    """
-    Process temporal signals some pipeline function and return processed signals
-    (parallel version)
-    """
-    out =[]
-    pool = Pool(njobs)
-    #def _pipeline_(*args):
-    #    if pipeline_kw is not None:
-    #        return pipeline(*args, **pipeline_kw)
-    #    else:
-    #        return pipeline(*args)
-    _pipeline_ = pipeline if pipeline_kw is None else partial(pipeline, **pipeline_kw)
-    recs = pool.map(_pipeline_, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
-    #pool.close()
-    #pool.join()    
-    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
 
@@ -1458,6 +1401,12 @@ def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
 
 # Labeling algorithms
 
+def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
+    mu = min(np.median(v),0)
+    low = np.percentile(v[v<=mu], percentile_low)
+    vs = smoother(v, tau)
+    return vs >= -low
+    
 def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
     return vs >= threshold
@@ -1522,7 +1471,63 @@ multiscale_labeler_joint = make_labeler_commitee(multiscale_labeler_l1,
 
 # Reconstruction
 
+
+
+
 from imfun import bwmorph
+
+
+def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True,
+                     noise_sigma = None,
+                     correct_bias = True):
+                     
+    """
+    Detect and reconstruct Ca-transients in 1D signal
+    """
+    if not any(y):
+        return np.zeros_like(y)
+    
+    ns = rolling_sd_pd(y) if noise_sigma is None else noise_sigma
+
+    if correct_bias:
+        bias = find_bias(y,th=1.5,ns=ns)
+        #low = y < np.median(y) + 1.5*ns
+        #if not any(low):
+        #    low = np.ones(len(y),np.bool)
+        #    bias = np.median(y[low])
+        #    if bias > 0:
+        #        y = y-bias
+        y = y-bias
+    vn = y/ns
+    #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
+    if labeler_kw is None:
+        labeler_kw={}
+    labels = labeler(vn, **labeler_kw)
+    if not any(labels):
+        return np.zeros_like(y)
+    return sp_rec_with_labels(vn, labels,with_plots=False,return_smoothed=smoothed_rec)*ns
+
+
+#from multiprocessing import Pool
+from pathos.pools import ProcessPool as Pool
+def process_signals_parallel(collection, pipeline=simple_pipeline_,pipeline_kw=None,njobs=4):
+    """
+    Process temporal signals some pipeline function and return processed signals
+    (parallel version)
+    """
+    out =[]
+    pool = Pool(njobs)
+    #def _pipeline_(*args):
+    #    if pipeline_kw is not None:
+    #        return pipeline(*args, **pipeline_kw)
+    #    else:
+    #        return pipeline(*args)
+    _pipeline_ = pipeline if pipeline_kw is None else partial(pipeline, **pipeline_kw)
+    recs = pool.map(_pipeline_, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
+    #pool.close()
+    #pool.join()    
+    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
+
 
 
 
