@@ -35,6 +35,7 @@ from imfun import bwmorph
 from imfun import cluster
 from imfun.filt.dctsplines import l2spline 
 from imfun.core.coords import make_grid
+from imfun.core import fnutils
 from imfun.multiscale import mvm
 
 from imfun import components
@@ -358,10 +359,13 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
 
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
+                                   min_comps = 1,
                                    spatial_filter=1,
-                                   spatial_filter_th=2.5,
+                                   spatial_filter_th=5,
+                                   spatial_min_cluster_size=9,
                                    baseline_smoothness=100,
                                    baseline_post_smooth=10,
+                                   detection_percentile_low=5,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -394,7 +398,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         if ncomp is None:
-            rank = min_ncomp(s, patch.shape)+1
+            rank = max(min_comps, min_ncomp(s, patch.shape)+1)
             sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
@@ -408,7 +412,15 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         #vhx = adaptive_median_filter(vh_images, th=spatial_filter_th, tsmooth=1, ssmooth=spatial_filter,
         #                             reverse=False,keep_clusters=False)
         if spatial_filter > 1:
-            vhx = np.array([adaptive_filter_2d(f,th=spatial_filter_th,smooth=spatial_filter,reverse=True) for f in vh_images])
+            pipeline = fnutils.flcompose(#lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
+                                         #                             smooth=spatial_filter),
+                                         lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
+                                                                      smooth=spatial_filter,reverse=True,
+                                                                      keep_clusters=True,
+                                                                      min_cluster_size=spatial_min_cluster_size
+                                         ),
+                )
+            vhx = np.array([pipeline(f) for f in vh_images])
             # attention: 'reverse=True' is experimental here! This is done to sparsify spatial components, but requres further
             # thought...
         else:
@@ -424,9 +436,11 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             biases = np.zeros_like(svd_signals)+biases
 
         svd_signals_c = svd_signals - biases
+        
+        labeler = functools.partial(percentile_label, percentile_low=detection_percentile_low, tau=1.5)
 
-        signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in svd_signals_c])
-        signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in svd_signals_c])
+        signals_fplus = np.array([v*labeler(v) for v in svd_signals_c])
+        signals_fminus = np.array([v*labeler(v) for v in svd_signals_c])
         signals_filtered = signals_fplus + signals_fminus
             
         ux = signals_filtered.T
@@ -1271,7 +1285,7 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False, reverse=False):
+def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False, reverse=False, min_cluster_size=7):
     medfilt = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
     details = frames - medfilt
     #mdmap = np.median(details, axis=0)
@@ -1282,22 +1296,28 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False
     s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
     #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
     if keep_clusters:
-        outliers ^= closing_of_opening(outliers)
-    if reverse:
-        return np.where(outliers,frames,medfilt)
+        clusters = threshold_object_size(outliers,min_cluster_size)
+        outliers = ~clusters if reverse else outliers^clusters
     else:
-        return np.where(outliers, medfilt, frames)
+        if reverse:
+            outliers = ~outliers    
+    return np.where(outliers, medfilt, frames)
 
 
-def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False):
+def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False, min_cluster_size=5):
     imgf = smoother(img, smooth)
     details = img - imgf
     sd = mad_std(img)
     outliers = np.abs(details) > th*sd
     if keep_clusters:
-        outliers ^= closing_of_opening(outliers)
-    if reverse:
-        outliers = ~outliers        
+        clusters = threshold_object_size(outliers,min_cluster_size)
+        if reverse:
+            outliers = ~clusters
+        else:
+            outliers ^= clusters
+    else:
+        if reverse:
+            outliers = ~outliers
     return np.where(outliers, imgf, img)
     
 
@@ -1708,18 +1728,26 @@ def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,pat
     return fsx
 
 
+def lambda_star(beta):
+    return np.sqrt(2*(beta+1) + (8*beta)/(beta+1 + np.sqrt(beta**2 + 14*beta + 1)))
+    
 def omega_approx(beta):
     return 0.56*beta**3 - 0.95*beta**2 + 1.82*beta + 1.43
 
-def svht(sv, sh):
+def svht(sv, sh, sigma=None):
+    "Gavish and Donoho 2014"
     m,n = sh
     if m>n: 
         m,n=n,m
-    omg = omega_approx(m/n)
-    return omg*np.median(sv)
+    beta = m/n
+    omg = omega_approx(beta)
+    if sigma is None:
+        return omg*np.median(sv)
+    else:
+        return lambda_star(beta)*np.sqrt(n)*sigma
 
-def min_ncomp(sv,sh):
-    th = svht(sv,sh)
+def min_ncomp(sv,sh,sigma=None):
+    th = svht(sv,sh,sigma)
     return sum(sv >=th)
 
 

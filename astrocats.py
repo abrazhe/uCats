@@ -81,7 +81,7 @@ def main():
         '--skip-existing': dict(action='store_true'),
         '--no-skip-dark-areas':dict(action='store_false'),
         '--do-oscillations': dict(action='store_true'),
-        '--detection-do-adaptive-median-filter': dict(default=1,type=bool,
+        '--detection-do-adaptive-median-filter': dict(default=0,type=bool,
                                                       help='whether to pre-filter data with an adaptive median filter'),
         '--detection-low-percentile':dict(default=1.5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
@@ -172,20 +172,30 @@ def process_record(fs, fname, series, args):
         return
 
     # I. -- Adaptive median filtering input data --
+    frames = fsc.data.astype(float32)
     if args.detection_do_adaptive_median_filter:
         print("Performing adaptive median filtering of the raw fluorescence signal")
         frames = ucats.adaptive_median_filter(fsc.data.astype(float32),
                                               th=5, tsmooth=1, ssmooth=5)
         frames = frames.astype(float32)
     else:
-        frames = fsc.data.astype(np.float32)
+        frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
 
     # II. Denoising frames
-    print('Denoising frames and separating background via block-SVD ')
+    print('Denoising frames and separating background via block-SVD in sqrt-ed data')
     #todo: take parameters from arguments to the script
-    frames_dn, benh = ucats.block_svd_separate_tslices(frames, twindow=200,nhood=5,stride=3, baseline_smoothness=100)
+    print('Going in time-slices')
+    fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
+                                                  twindow=300,nhood=8,stride=5, baseline_smoothness=100,
+                                                  spatial_filter=5, spatial_filter_th=3,
+                                                  min_comps=5,
+                                                  spatial_min_cluster_size=9)
+    benh =  0.25*fb**2
+    frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
+    del fb, fdelta
+    
     benh = fseq.from_array(benh)
-    benh.meta['channel'] = 'F baseline'
+    benh.meta['channel'] = 'Fbaseline'
     
     # III. Calculate ΔF/F
     print('Calculating relative fluorescence changes')
@@ -252,7 +262,7 @@ def process_record(fs, fname, series, args):
         print(' -- Combined the two  masks ')
         
         fsx = fseq.from_array(dfof*mask_final)
-        fsx.meta['channel'] = 'newrec6'
+        fsx.meta['channel'] = 'newrec7'
         #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
         #fsx = fseq.from_array(fsx)
         #fsx.meta['channel'] = '-newrec5-medians-'
@@ -279,7 +289,7 @@ def process_record(fs, fname, series, args):
     #frames_out = benh.data*(asarray(fsx.data,float32)+1)
     frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
-    #fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
+    fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
     p = ui.Picker(fsout); p.start()
     p0 = ui.Picker(fseq.FStackColl([fsc]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)
@@ -415,7 +425,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
 
     from imfun.core import fnutils
     if args.pca_denoise:
-        pcf = components.pca.PCA_frames(fsm_filtered**0.5, npc=len(fsm)//50+5)
+        pcf = components.pca.PCA_frames(2*fsm_filtered**0.5, npc=len(fsm)//50+5)
         vh_frames = pcf.vh.reshape(-1, *pcf.sh)
 
         #process_spatial_component = fnutils.flcompose(
@@ -423,8 +433,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         #    lambda f: ucats.adaptive_median_filter_2d(f,th=5,smooth=3),
         #    lambda f: ucats.l2spline(f,0.5))
         process_spatial_component = fnutils.flcompose(
-            lambda f: ucats.adaptive_filter_2d(f,th=1.5,smooth=25,reverse=True,
-                                               keep_clusters=False,
+            lambda f: ucats.adaptive_filter_2d(f,th=1.5,smooth=25,reverse=True, keep_clusters=False,
                                                smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth)),
             lambda f: ucats.l2spline(f,1.0),
             lambda f: f-ucats.l2spline(f, 30),
@@ -618,7 +627,16 @@ def animate_events(frames, ev_coll, args,
     anim.save(movie_name, writer=w)
 
 
-
+def make_mask(dfof, nsd0):
+    th = ucats.percentile_th_frames(dfof,2.5)
+    mask_simple1 = (dfof1 > th)*(dfof1>0.05)
+    mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
+    mask_simple1 = np.array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+    
+    mask_simple2 = (dfof>nsd0)
+    mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
+    mask_simple2 = np.array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
+    return ucats.select_overlapping(mask_simple2, mask_simple1)
 
 if __name__ == '__main__':
     main()
