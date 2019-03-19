@@ -357,6 +357,14 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                 out[:,r,c] = 0
     return out
 
+
+def nmf_labeler(y,th=1):
+    sigma = std_median(y)
+    ys = smoothed_medianf(y,0.5,3)
+    structures, nlab = ndi.label(y>np.median(y))
+    peaks = ys>=th*sigma
+    return y*select_overlapping(structures,peaks)
+
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
                                    min_comps = 1,
@@ -375,14 +383,17 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
     out_signals = np.zeros(sh,_dtype_)
     out_baselines = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],_dtype_)
+    counts_b = np.zeros(sh[1:],_dtype_)    
     if mask_of_interest is None:
         mask=np.ones(counts.shape,bool)
     else:
         mask = mask_of_interest
     Ln = (2*nhood+1)**2
     
-    def _process_loc(r,c):
+    def _process_loc(r,c,mask):
         sl = (slice(r-nhood,r+nhood), slice(c-nhood,c+nhood)) # don't need center here
+        if not np.any(mask[sl]):
+            return
         tsl = (slice(None),)+sl
 
         patch_frames = data[tsl]
@@ -422,12 +433,15 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                                                       min_cluster_size=spatial_min_cluster_size
                                          ),
                 )
-            vhx = np.array([pipeline(f) for f in vh_images])
-            # attention: 'reverse=True' is experimental here! This is done to sparsify spatial components, but requres further
-            # thought...
+            vhx_b = np.array([smoothed_medianf(f,1,spatial_filter) for f in vh_images])
+            vhx_s = np.array([pipeline(f) for f in vh_images]) 
+            #vhx_s  = np.array([m*opening_of_closing(np.abs(m-np.median(m)) > mad_std(m)) for m in vh_images])
         else:
-            vhx = vh_images
-        vhx = vhx.reshape(rank,len(vh[0]))
+            vhx_s = vh_images
+            vhx_b = vh_images
+            
+        vhx_s = vhx_s.reshape(rank,len(vh[0]))
+        vhx_b = vhx_b.reshape(rank,len(vh[0]))
 
         svd_signals = ux.T
         if baseline_smoothness:
@@ -451,32 +465,47 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:rank]
-        signals = ux@np.diag(s[:rank])@vhx[:rank]
-        baselines = ux_biases@np.diag(s[:rank])@vhx[:rank]
+        signals = ux@np.diag(s[:rank])@vhx_s
+        baselines = ux_biases@np.diag(s[:rank])@vhx_b#@vhx[:rank]
+
+        #Xd = u[:,:rank]@np.diag(s[:rank])@vh[:rank]-baselines
+        #Xd = Xd*(Xd>0)
+        #d = skd.NMF(rank,l1_ratio=0.9,init='nndsvd')
+        #nmf_out = d.fit_transform(Xd)
+        #nmf_signals = nmf_out.T
+        #nmf_signals_f = np.array([nmf_labeler(y,3) for y in nmf_signals])
+        ##nmf_comps = np.array([adaptive_filter_2d(c.reshape(w_sh[1:]),reverse=True,keep_clusters=True) for c in d.components_])
+        #nmf_comps = np.array([ndi.median_filter(c.reshape(w_sh[1:]),3) for c in d.components_])
+        ##print(nmf_comps.shape,)
+        #nmf_rec = (nmf_signals_f.T@nmf_comps.reshape(d.components_.shape))
+        #nmf_rec = nmf_rec.reshape(patch.shape)
         
         #score = np.sum(s[:rank]**2)/np.sum(s**2)
         score = 1
         
         rec  = signals.reshape(w_sh)
+        #rec = nmf_rec.reshape(w_sh)
         rec_baselines = baselines.reshape(w_sh)
         # we possibly shift the baseline level due to thresholding of components
         ##rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
         rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
         out_signals[tsl] += score*rec
         out_baselines[tsl] += score*rec_baselines
-        counts[sl] += score
+        counts_b[sl] += score
+        counts[sl] += score#*(np.sum(rec,0)>0)
         
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
-            if mask[r,c]:
-                _process_loc(r,c)
+            #if mask[r,c]:
+            _process_loc(r,c,mask)
     out_signals = out_signals/(1e-6+counts[None,:,:])
-    out_baselines = out_baselines/(1e-6+counts[None,:,:])
+    out_baselines = out_baselines/(1e-6+counts_b[None,:,:])
     for r in range(sh[1]):
         for c in range(sh[2]):
             if counts[r,c] == 0:
                 out_signals[:,r,c] = 0
+            if counts_b[r,c] == 0:
                 out_baselines[:,r,c] = 0
     if baseline_post_smooth > 0:
         out_baselines = ndi.gaussian_filter(out_baselines, (baseline_post_smooth, 0, 0))
