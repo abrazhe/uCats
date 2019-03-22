@@ -16,6 +16,8 @@ import numpy as np
 
 from numpy import pi
 from numpy import linalg
+
+from numpy import array,zeros,zeros_like,median,diag,ravel
 from numpy.linalg import norm, lstsq, svd, eig
 from numpy.random import randn
 
@@ -373,7 +375,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
                                    baseline_post_smooth=10,
-                                   detection_percentile_low=5,
+                                   detection_percentile_low=25,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -415,26 +417,32 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rank = ncomp
 
         ux = u[:,:rank]
+        vh = vh[:rank]
+        s = s[:rank]
         
-        vh_images = vh[:rank].reshape(-1,*w_sh[1:])
+        vh_images = vh.reshape(-1,*w_sh[1:])
         #vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         #vhx_threshs = [mad_std(f) for f in vh_images]
         #vhx = np.array([np.where(np.abs(f-fx)>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         #vhx = adaptive_median_filter(vh_images, th=spatial_filter_th, tsmooth=1, ssmooth=spatial_filter,
         #                             reverse=False,keep_clusters=False)
+
+        
+        
         if spatial_filter > 1:
-            pipeline = fnutils.flcompose(#lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
-                                         #                             smooth=spatial_filter),
-                                         lambda f: adaptive_filter_2d(f,
-                                                                      th=spatial_filter_th,
-                                                                      smooth=spatial_filter,
-                                                                      reverse=True,
-                                                                      keep_clusters=True,
-                                                                      min_cluster_size=spatial_min_cluster_size
-                                         ),
-                )
-            vhx_b = np.array([smoothed_medianf(f,1,spatial_filter) for f in vh_images])
-            vhx_s = np.array([pipeline(f) for f in vh_images]) 
+            #pipeline = fnutils.flcompose(#lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
+            #                             #                             smooth=spatial_filter),
+            #                             lambda f: adaptive_filter_2d(f,
+            #                                                          th=spatial_filter_th,
+            #                                                          smooth=spatial_filter,
+            #                                                          reverse=True,
+            #                                                          keep_clusters=True,
+            #                                                          min_cluster_size=spatial_min_cluster_size
+            #                             ),
+            #    )
+            vhx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in vh_images])
+            vhx_s = vh_images
+            #vhx_s = np.array([pipeline(f) for f in vh_images]) 
             #vhx_s  = np.array([m*opening_of_closing(np.abs(m-np.median(m)) > mad_std(m)) for m in vh_images])
         else:
             vhx_s = vh_images
@@ -465,9 +473,49 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:rank]
-        signals = ux@np.diag(s[:rank])@vhx_s
-        baselines = ux_biases@np.diag(s[:rank])@vhx_b#@vhx[:rank]
+        #signals = ux@np.diag(s[:rank])@vhx_s
+        score = 1
 
+        baselines = ux_biases@np.diag(s)@vhx_b#@vhx[:rank]
+
+
+        event_tmask = np.sum(np.abs(signals_filtered)>0,0)
+        e_labels,nlab = ndi.label(event_tmask)
+        e_slices = ndi.find_objects(e_labels)
+        diff_frames = (patch - baselines).reshape(-1,*w_sh[1:])
+        
+        event_maps = [diff_frames[sl].mean(0) for sl in e_slices]
+        #event_maps_f = (adaptive_filter_2d(m,th=1,smooth=25,keep_clusters=1,reverse=1) for m in event_maps)
+        #event_maps_f = [smoothed_medianf((m-np.median(m))*(m>np.median(m)),0.5,3) for m in event_maps_f]
+        event_maps_f = [adaptive_filter_2d(m,th=1,smooth=25,keep_clusters=1,reverse=1) for m in event_maps]
+        event_maps_f = [smoothed_medianf(m*(m>median(m)),0.5,3) for m in event_maps]
+        event_maps_f = [core.rescale(smoothed_medianf(m, 0.5, 3)) for m in event_maps_f]        
+
+        out_rec = zeros_like(patch)
+        for slx,em in zip(e_slices, event_maps_f):
+            trec = ux[slx]@np.diag(s)@(vhx_s*ravel(core.rescale(em)))
+            out_rec[slx] = trec
+        
+
+        
+        #signals = np.zeros_like(baselines)
+        #vhx_s -= vhx_s.mean(axis=1).reshape(-1,1)
+        #signals = ux@np.diag(s)@vhx_s
+        
+        
+        #points = vh[:2].T
+        #all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
+        #dbscan_eps_p,dbscan_minpts = 5,3
+        #dbscan_eps = np.percentile(all_dists[all_dists>1e-6], dbscan_eps_p)
+        #_,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts, distances=all_dists)
+        #if np.any(affs >=0):
+        #    for k in np.unique(affs):
+        #        if k < 0:
+        #            continue
+        #        similar = affs==k
+        #        vhx = vh*similar
+        #        signals += ux@np.diag(s)@vhx
+                
         #Xd = u[:,:rank]@np.diag(s[:rank])@vh[:rank]-baselines
         #Xd = Xd*(Xd>0)
         #d = skd.NMF(rank,l1_ratio=0.9,init='nndsvd')
@@ -481,17 +529,19 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         #nmf_rec = nmf_rec.reshape(patch.shape)
         
         #score = np.sum(s[:rank]**2)/np.sum(s**2)
-        score = 1
         
-        rec  = signals.reshape(w_sh)
+        rec  = out_rec.reshape(w_sh)
         #rec = nmf_rec.reshape(w_sh)
+
         rec_baselines = baselines.reshape(w_sh)
-        # we possibly shift the baseline level due to thresholding of components
-        ##rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
+        #print(rec.shape, rec_baselines.shape,dat)
         rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
-        out_signals[tsl] += score*rec
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
+
+        # we possibly shift the baseline level due to thresholding of components
+        ##rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
+        out_signals[tsl] += score*rec
         counts[sl] += score#*(np.sum(rec,0)>0)
         
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
@@ -1245,10 +1295,13 @@ def local_jitter(v, sigma=5):
     return vx
     
 
-def std_median(v):
-    N = float(len(v))
-    md = np.median(v)
-    return (np.sum((v-md)**2)/N)**0.5
+def std_median(v,axis=None):
+    if axis is None:
+        N = float(len(v))
+    else:
+        N = float(v.shape[axis])
+    md = np.median(v,axis=axis)
+    return (np.sum((v-md)**2,axis)/N)**0.5
 
 def mad_std(v,axis=None):
     mad = np.median(abs(v-np.median(v,axis=axis)),axis=axis)
@@ -1274,6 +1327,7 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False
         if reverse:
             outliers = ~outliers    
     return np.where(outliers, medfilt, frames)
+
 
 
 def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False, min_cluster_size=5):

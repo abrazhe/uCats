@@ -83,7 +83,7 @@ def main():
         '--do-oscillations': dict(action='store_true'),
         '--detection-do-adaptive-median-filter': dict(default=0,type=bool,
                                                       help='whether to pre-filter data with an adaptive median filter'),
-        '--detection-low-percentile':dict(default=1.5, type=float,
+        '--detection-low-percentile':dict(default=2.5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
         '--detection-loc-nhood':dict(default=2,type=int),
         '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
@@ -156,6 +156,11 @@ def process_lif_file(fname, args,min_frames=600):
             gc.collect()
     io_lif.javabridge.kill_vm()
 
+def convert_from_varstab(df,b):
+    "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
+    bc = b**2/4
+    dfc =  (df**2 + 2*df*b)/4
+    return dfc, bc    
 
 def process_record(fs, fname, series, args):
     nametag = '-'.join((fname,series,args.suff))
@@ -186,13 +191,19 @@ def process_record(fs, fname, series, args):
     #todo: take parameters from arguments to the script
     print('Going in time-slices')
     fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
-                                                  twindow=300,nhood=8,stride=5, baseline_smoothness=100,
-                                                  spatial_filter=5, spatial_filter_th=3,
-                                                  min_comps=5,
-                                                  spatial_min_cluster_size=9)
-    benh =  0.25*fb**2
-    frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
-    del fb, fdelta
+                                                  twindow=600,nhood=8,stride=4, baseline_smoothness=300,
+                                                  spatial_filter=0, spatial_filter_th=3,
+                                                  min_comps=3, spatial_min_cluster_size=5)
+    fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3)
+    nsdt = ucats.std_median(fdelta,axis=0)
+    th = ucats.percentile_th_frames(fdelta,args.detection_low_percentile)
+    #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
+    mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
+    fdelta *= mask
+    frames_dn,benh = convert_from_varstab(fdelta, fb)
+    #benh =  0.25*fb**2
+    #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
+    del fb, fdelta,mask
     
     benh = fseq.from_array(benh)
     benh.meta['channel'] = 'Fbaseline'
@@ -246,23 +257,23 @@ def process_record(fs, fname, series, args):
         dfof = (frames_dn/benh.data).astype(np.float32)
         dfof0 = (frames/benh.data - 1).astype(np.float32)
 
-        nsd0 = ucats.mad_std(dfof0, axis=0)
-        th = ucats.percentile_th_frames(dfof,args.detection_low_percentile)
-        mask_simple1 = (dfof > th)*(dfof>0.05)
-        mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
-        mask_simple1 = array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
-        print(' -- Done percentile-based masks ')
+        #nsd0 = ucats.mad_std(dfof0, axis=0)
+        #th = ucats.percentile_th_frames(dfof,args.detection_low_percentile)
+        #mask_simple1 = (dfof > th)*(dfof>0.05)
+        #mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
+        #mask_simple1 = array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+        #print(' -- Done percentile-based masks ')
         
-        mask_simple2 = (dfof>nsd0)
-        mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
-        mask_simple2 = array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
-        print(' -- Done s.d.-based masks ')
+        #mask_simple2 = (dfof>nsd0)
+        #mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
+        #mask_simple2 = array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
+        #print(' -- Done s.d.-based masks ')
         
-        mask_final = ucats.select_overlapping(mask_simple2, mask_simple1)
-        print(' -- Combined the two  masks ')
+        #mask_final = ucats.select_overlapping(mask_simple2, mask_simple1)
+        #print(' -- Combined the two  masks ')
         
-        fsx = fseq.from_array(dfof*mask_final)
-        fsx.meta['channel'] = 'newrec7'
+        fsx = fseq.from_array(dfof)
+        fsx.meta['channel'] = 'newrec7a'
         #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
         #fsx = fseq.from_array(fsx)
         #fsx.meta['channel'] = '-newrec5-medians-'
