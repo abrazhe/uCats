@@ -14,6 +14,7 @@ import numpy as np
 from numpy import *
 
 from scipy import ndimage,signal
+from scipy import ndimage as ndi
 
 import matplotlib
 matplotlib.use('Agg')
@@ -80,20 +81,18 @@ def main():
         '--skip-existing': dict(action='store_true'),
         '--no-skip-dark-areas':dict(action='store_false'),
         '--do-oscillations': dict(action='store_true'),
-        '--detection-do-jitter':dict(default=0,type=bool,
-                                        help='whether to use local jitter in detection algorithm;\
- reduces false positive ratio, but can lead to missed events'),
-        '--detection-low-percentile':dict(default=1.5, type=float,
+        '--detection-do-adaptive-median-filter': dict(default=0,type=bool,
+                                                      help='whether to pre-filter data with an adaptive median filter'),
+        '--detection-low-percentile':dict(default=2.5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
         '--detection-tau-smooth':dict(default=2., type=float,
                                       help='smoothing in detection, make larger for less false positives,\
- make smaller for detection of smaller events'),
+                                      make smaller for detection of smaller events'),
         '--detection-loc-nhood':dict(default=3,type=int),
         '--detection-smoothed-reconstruction':dict(default=1,type=bool),
-        '--signal-patch-denoise-spatial-size':dict(default=5,type=int),
-        '--signal-patch-denoise-temporal-size':dict(default=1,type=int),        
-        '--signal-patch-denoise-npc':dict(default=5,type=int),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
+        '--detection-loc-nhood':dict(default=8,type=int),
+        '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-peak-threshold':dict(default=0.1, type=float,help='event must contain a peak with at least this ΔF/F value'),
         '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
         '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
@@ -162,10 +161,16 @@ def process_lif_file(fname, args,min_frames=600):
             gc.collect()
     io_lif.javabridge.kill_vm()
 
+def convert_from_varstab(df,b):
+    "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
+    bc = b**2/4
+    dfc =  (df**2 + 2*df*b)/4
+    return dfc, bc    
 
 def process_record(fs, fname, series, args):
     nametag = '-'.join((fname,series,args.suff))
     print('nametag is:', nametag)
+    h5f  = None
     # II.  Stabilize motion artifacts
     fsc,_ = stabilize_motion(fs, args,nametag)
 
@@ -177,20 +182,48 @@ def process_record(fs, fname, series, args):
 
     if args.no_events:
         return
+
+    # I. -- Adaptive median filtering input data --
+    frames = fsc.data.astype(float32)
+    if args.detection_do_adaptive_median_filter:
+        print("Performing adaptive median filtering of the raw fluorescence signal")
+        frames = ucats.adaptive_median_filter(fsc.data.astype(float32),
+                                              th=5, tsmooth=1, ssmooth=5)
+        frames = frames.astype(float32)
+    else:
+        frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
+
+    # II. Denoising frames
+    print('Denoising frames and separating background via block-SVD in sqrt-ed data')
+    #todo: take parameters from arguments to the script
+    print('Going in time-slices')
+    fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
+                                                  twindow=600,nhood=8,stride=4, baseline_smoothness=300,
+                                                  spatial_filter=0, spatial_filter_th=3,
+                                                  min_comps=3, spatial_min_cluster_size=5)
+    fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3)
+    nsdt = ucats.std_median(fdelta,axis=0)
+    th = ucats.percentile_th_frames(fdelta,args.detection_low_percentile)
+    #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
+    mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
+    fdelta *= mask
+    frames_dn,benh = convert_from_varstab(fdelta, fb)
+    #benh =  0.25*fb**2
+    #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
+    del fb, fdelta,mask
     
-    # III. Calculate baseline
-    print('Calculating dynamic fluorescence baseline for motion-corrected data')
-    smooth,mw = len(fsc)//10, len(fsc)//5
-    #benh = ucats.calculate_baseline_pca(fsc.data, smooth=smooth,medianw=mw)
-    benh = ucats.get_baseline_frames(fsc.data,smooth=smooth)
-    h5f = None
+    benh = fseq.from_array(benh)
+    benh.meta['channel'] = 'Fbaseline'
+    
+    # III. Calculate ΔF/F
+    print('Calculating relative fluorescence changes')
     detected_name = nametag+'-detected.h5'
     if args.no_skip_dark_areas:
         print('calculating well-stained and poorly-stained areas')
         colored_mask = dark_area_mask(benh.data.mean(0))
     else:
         print('no color mask asked for')
-        colored_mask = np.ones(benh.frame_shape, np.bool)
+        colored_mask = np.ones(benh[0].shape, np.bool)
 
     f,ax = plt.subplots(1,1,figsize=(8,8));
     ax.imshow(benh.data.mean(0),cmap='gray')
@@ -205,29 +238,75 @@ def process_record(fs, fname, series, args):
         print('loading existing results of event detection:', detected_name)
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
+        h5f = fsx.h5file
     else:
-        print("Calculating 'augmented' data")
-        print(' - denoising ΔF/F frames')
-        dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
-                                                npc=args.signal_patch_denoise_npc,
-                                                temporal_filter=args.signal_patch_denoise_temporal_size,
-                                                spatial_filter=args.signal_patch_denoise_spatial_size,
-                                                mask_of_interest=colored_mask)
-        if args.save_denoised_dfof:
-            fs_tmp_ = fseq.from_array(dfof_cleaned)
-            fs_tmp_.meta['channel'] = 'dfof_denoised'
-            fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
+#         print("Calculating 'augmented' data")
+#         print(' - denoising ΔF/F frames')
+#         dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
+#                                                 npc=args.signal_patch_denoise_npc,
+#                                                 temporal_filter=args.signal_patch_denoise_temporal_size,
+#                                                 spatial_filter=args.signal_patch_denoise_spatial_size,
+#                                                 mask_of_interest=colored_mask)
+#         if args.save_denoised_dfof:
+#             fs_tmp_ = fseq.from_array(dfof_cleaned)
+#             fs_tmp_.meta['channel'] = 'dfof_denoised'
+#             fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
+#         print(' - Detecting and cleaning up events...')
+
+#         pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction)
+#         labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
+#         labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+
+#         fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
+#                               labeler = labeler,
+#                               pipeline_kw=pipeline_kwargs,
+#                               labeler_kw=labeler_kwargs,
+#                               mask_of_interest=colored_mask)
+        print("Calculating 'augmented' data")        #print(' - denoising ΔF/F frames')
+        #dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
+        #                                        npc=args.signal_patch_denoise_npc,
+        #                                        temporal_filter=args.signal_patch_denoise_temporal_size,
+        #                                        spatial_filter=args.signal_patch_denoise_spatial_size,
+        #                                        mask_of_interest=colored_mask)
+        #if args.save_denoised_dfof:
+        #    fs_tmp_ = fseq.from_array(dfof_cleaned)
+        #    fs_tmp_.meta['channel'] = 'dfof_denoised'
+        #    fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
         print(' - Detecting and cleaning up events...')
 
-        pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction)
-        labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
-        labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+        #pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction) 
+        #labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
+        #labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
 
-        fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
-                              labeler = labeler,
-                              pipeline_kw=pipeline_kwargs,
-                              labeler_kw=labeler_kwargs,
-                              mask_of_interest=colored_mask)
+        #fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
+        #                      labeler = labeler,
+        #                      pipeline_kw=pipeline_kwargs,
+        #                      labeler_kw=labeler_kwargs,
+        #                      mask_of_interest=colored_mask)
+        dfof = (frames_dn/benh.data).astype(np.float32)
+        dfof0 = (frames/benh.data - 1).astype(np.float32)
+
+        #nsd0 = ucats.mad_std(dfof0, axis=0)
+        #th = ucats.percentile_th_frames(dfof,args.detection_low_percentile)
+        #mask_simple1 = (dfof > th)*(dfof>0.05)
+        #mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
+        #mask_simple1 = array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+        #print(' -- Done percentile-based masks ')
+        
+        #mask_simple2 = (dfof>nsd0)
+        #mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
+        #mask_simple2 = array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
+        #print(' -- Done s.d.-based masks ')
+        
+        #mask_final = ucats.select_overlapping(mask_simple2, mask_simple1)
+        #print(' -- Combined the two  masks ')
+        
+        fsx = fseq.from_array(dfof)
+        fsx.meta['channel'] = 'newrec7a'
+        #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
+        #fsx = fseq.from_array(fsx)
+        #fsx.meta['channel'] = '-newrec5-medians-'
+        #fsx = ucats.make_enh5(dfof, nhood=args.detection_loc_nhood, verbose=args.verbose)
         
         coll_ = ucats.EventCollection(fsx.data, 
                                       threshold=args.event_segmentation_threshold,                                     
@@ -247,7 +326,8 @@ def process_record(fs, fname, series, args):
     # VI.  Make movies
     if args.verbose: print('Making movies of detected activity')        
     #fsout = fseq.FStackColl([fsc,  fsx])
-    frames_out = benh.data*(asarray(fsx.data,float32)+1)
+    #frames_out = benh.data*(asarray(fsx.data,float32)+1)
+    frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
     fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
     p = ui.Picker(fsout); p.start()
@@ -369,32 +449,54 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     
     
 
+    # If reusing previously calculating warps and want to re-make the movie
+    if os.path.exists(warps_name) and (not args.with_motion_movies):        
+        final_warps = ofreg.warps.from_dct_encoded(warps_name)
+        fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
+        return fsc, final_warps
+    
+
     if args.verbose:
         print('Filtering data')
         
     # Median filter. TODO: make optional via arguments
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
-    fsm_filtered = ndimage.median_filter(fsm[:], size=3)
-
+    #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
+    fsm_filtered = ucats.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
     # Removing global trend
-    fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
+    #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
 
     
     #fsm.frame_filters = []
-    if args.verbose > 1: print('done spatial median filter')
+    #if args.verbose > 1: print('done spatial median filter')
 
-        
+    from imfun.core import fnutils
     if args.pca_denoise:
-        pcf = components.pca.PCA_frames(fsm_filtered, npc=len(fsm)//50+5)
+        pcf = components.pca.PCA_frames(2*fsm_filtered**0.5, npc=len(fsm)//50+5)
         vh_frames = pcf.vh.reshape(-1, *pcf.sh)
-        smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
-        pcf.vh = array([[smooth_and_detrend(f) for f in vh_frames]]).reshape(pcf.vh.shape)
+
+        #process_spatial_component = fnutils.flcompose(
+        #    lambda f: ucats.adaptive_median_filter_2d(f,th=2,smooth=25,reverse=True),
+        #    lambda f: ucats.adaptive_median_filter_2d(f,th=5,smooth=3),
+        #    lambda f: ucats.l2spline(f,0.5))
+        process_spatial_component = fnutils.flcompose(
+            lambda f: ucats.adaptive_filter_2d(f,th=1.5,smooth=25,reverse=True, keep_clusters=False,
+                                               smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth)),
+            lambda f: ucats.l2spline(f,1.0),
+            lambda f: f-ucats.l2spline(f, 30),
+        )
+        #smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
+        coords_s = array([ucats.smoothed_medianf(v,0.5,3) for v in pcf.coords.T]).T
+        pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
         pcf.tsvd.components_ = pcf.vh
-        fsm_filtered = pcf.tsvd.inverse_transform(pcf.coords).reshape(len(fsm_filtered),*pcf.sh) + smooth_and_detrend(pcf.mean_frame)
+        fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(fsm_filtered),*pcf.sh) + process_spatial_component(pcf.mean_frame)
+        fsm_filtered = fsm_filtered.astype(ucats._dtype_)
         if args.verbose>1: print('done PCA-based denoising')
     else: pcf = None
 
+    fsm_filtered = fsm_filtered.astype(ucats._dtype_)
+    
     
     #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
     #fsm_filtered = fseq.from_array(fsm_filtered[:])
@@ -436,7 +538,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
                                               njobs=args.ncpu,                                              
                                               **model_params)
             warp_history.append(warps)
-            newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu)
+            newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu).astype(ucats._dtype_)
             mx_warps = ucats.max_shifts(warps, args.verbose)            
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
@@ -573,7 +675,16 @@ def animate_events(frames, ev_coll, args,
     anim.save(movie_name, writer=w)
 
 
-
+def make_mask(dfof, nsd0):
+    th = ucats.percentile_th_frames(dfof,2.5)
+    mask_simple1 = (dfof1 > th)*(dfof1>0.05)
+    mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
+    mask_simple1 = np.array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+    
+    mask_simple2 = (dfof>nsd0)
+    mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
+    mask_simple2 = np.array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
+    return ucats.select_overlapping(mask_simple2, mask_simple1)
 
 if __name__ == '__main__':
     main()
