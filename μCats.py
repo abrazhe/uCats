@@ -374,9 +374,22 @@ def nmf_labeler(y,th=1):
     peaks = ys>=th*sigma
     return y*select_overlapping(structures,peaks)
 
+
+def top_average_frames(frames,percentile=85):
+    sh = frames.shape
+    pmap = np.percentile(frames, percentile, axis=0)
+    out = np.zeros(sh[1:])
+    for r in range(sh[1]):
+        for c in range(sh[2]):
+            p = pmap[r,c]
+            v = frames[:,r,c]
+            out[r,c] = np.mean(v[v>=p])
+    return out
+
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
                                    min_comps = 1,
+                                   max_comps = None,
                                    spatial_filter=1,
                                    spatial_filter_th=5,
                                    spatial_min_cluster_size=7,
@@ -392,12 +405,15 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
     out_signals = np.zeros(sh,_dtype_)
     out_baselines = np.zeros(sh,_dtype_)
     counts = np.zeros(sh[1:],_dtype_)
-    counts_b = np.zeros(sh[1:],_dtype_)    
+    counts_b = np.zeros(sh[1:],_dtype_)
     if mask_of_interest is None:
         mask=np.ones(counts.shape,bool)
     else:
         mask = mask_of_interest
     Ln = (2*nhood+1)**2
+
+    if max_comps is None:
+        max_comps = (nhood**2)/2
     
     def _process_loc(r,c,mask):
         sl = (slice(r-nhood,r+nhood), slice(c-nhood,c+nhood)) # don't need center here
@@ -407,8 +423,11 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         patch_frames = data[tsl]
         w_sh = patch_frames.shape
+        psh = w_sh[1:]
 
-        patch = patch_frames.reshape(sh[0],-1)
+        patch = patch_frames.reshape(L,-1)
+        patch_c = patch.mean(0)
+        patch = patch - patch_c
 
         if not(np.any(patch)):
             out_signals[tsl] += 0
@@ -418,7 +437,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         if ncomp is None:
-            rank = max(min_comps, min_ncomp(s, patch.shape)+1)
+            rank = min(max(min_comps, min_ncomp(s, patch.shape)+1), max_comps)
             sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
@@ -427,7 +446,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         vh = vh[:rank]
         s = s[:rank]
         
-        vh_images = vh.reshape(-1,*w_sh[1:])
+        vh_images = vh.reshape(-1,*psh)
         #vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         #vhx_threshs = [mad_std(f) for f in vh_images]
         #vhx = np.array([np.where(np.abs(f-fx)>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
@@ -437,20 +456,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         
         
         if spatial_filter > 1:
-            #pipeline = fnutils.flcompose(#lambda f: adaptive_filter_2d(f, th=spatial_filter_th,
-            #                             #                             smooth=spatial_filter),
-            #                             lambda f: adaptive_filter_2d(f,
-            #                                                          th=spatial_filter_th,
-            #                                                          smooth=spatial_filter,
-            #                                                          reverse=True,
-            #                                                          keep_clusters=True,
-            #                                                          min_cluster_size=spatial_min_cluster_size
-            #                             ),
-            #    )
             vhx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in vh_images])
             vhx_s = vh_images
-            #vhx_s = np.array([pipeline(f) for f in vh_images]) 
-            #vhx_s  = np.array([m*opening_of_closing(np.abs(m-np.median(m)) > mad_std(m)) for m in vh_images])
         else:
             vhx_s = vh_images
             vhx_b = vh_images
@@ -475,7 +482,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         signals_fminus = np.array([v*labeler(-v) for v in svd_signals_c])
         signals_filtered = signals_fplus + signals_fminus
             
-        ux = signals_filtered.T
+        ux_signals = signals_filtered.T
         ux_biases = biases.T
         
         #print('\n', patch.shape, u.shape, vh.shape)
@@ -485,64 +492,41 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         baselines = ux_biases@np.diag(s)@vhx_b#@vhx[:rank]
 
+        event_tmask = np.sum(np.abs(signals_filtered)>0,0) > 0
+        if not np.any(event_tmask):
+            rec = np.zeros(w_sh)
+        else:
+            diff_frames = (ux@diag(s)@vh - baselines).reshape(-1,*psh)
 
-        event_tmask = np.sum(np.abs(signals_filtered)>0,0)
-        e_labels,nlab = ndi.label(event_tmask)
-        e_slices = ndi.find_objects(e_labels)
-        diff_frames = (patch - baselines).reshape(-1,*w_sh[1:])
-        
-        event_maps = [diff_frames[sl].mean(0) for sl in e_slices]
-        #event_maps_f = (adaptive_filter_2d(m,th=1,smooth=25,keep_clusters=1,reverse=1) for m in event_maps)
-        #event_maps_f = [smoothed_medianf((m-np.median(m))*(m>np.median(m)),0.5,3) for m in event_maps_f]
-        event_maps_f = [adaptive_filter_2d(m,th=1,smooth=25,keep_clusters=1,reverse=1) for m in event_maps]
-        event_maps_f = [smoothed_medianf(m*(m>median(m)),0.5,3) for m in event_maps]
-        event_maps_f = [core.rescale(smoothed_medianf(m, 0.5, 3)) for m in event_maps_f]        
+            e_labels,nlab = ndi.label(event_tmask)
+            e_slices = ndi.find_objects(e_labels)
 
-        out_rec = zeros_like(patch)
-        for slx,em in zip(e_slices, event_maps_f):
-            trec = ux[slx]@np.diag(s)@(vhx_s*ravel(core.rescale(em)))
-            out_rec[slx] = trec
-        
+            bg_map = adaptive_filter_2d(diff_frames[~event_tmask].mean(0),th=3,smooth=5)
+            bg_sd = mad_std(diff_frames[~event_tmask],0)
+            th_on = percentile_th_frames(diff_frames[event_tmask],5)
+            th_off = percentile_th_frames(diff_frames[~event_tmask],5)
 
-        
-        #signals = np.zeros_like(baselines)
-        #vhx_s -= vhx_s.mean(axis=1).reshape(-1,1)
-        #signals = ux@np.diag(s)@vhx_s
-        
-        
-        #points = vh[:2].T
-        #all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
-        #dbscan_eps_p,dbscan_minpts = 5,3
-        #dbscan_eps = np.percentile(all_dists[all_dists>1e-6], dbscan_eps_p)
-        #_,_,affs = cluster.dbscan(points, dbscan_eps, dbscan_minpts, distances=all_dists)
-        #if np.any(affs >=0):
-        #    for k in np.unique(affs):
-        #        if k < 0:
-        #            continue
-        #        similar = affs==k
-        #        vhx = vh*similar
-        #        signals += ux@np.diag(s)@vhx
-                
-        #Xd = u[:,:rank]@np.diag(s[:rank])@vh[:rank]-baselines
-        #Xd = Xd*(Xd>0)
-        #d = skd.NMF(rank,l1_ratio=0.9,init='nndsvd')
-        #nmf_out = d.fit_transform(Xd)
-        #nmf_signals = nmf_out.T
-        #nmf_signals_f = np.array([nmf_labeler(y,3) for y in nmf_signals])
-        ##nmf_comps = np.array([adaptive_filter_2d(c.reshape(w_sh[1:]),reverse=True,keep_clusters=True) for c in d.components_])
-        #nmf_comps = np.array([ndi.median_filter(c.reshape(w_sh[1:]),3) for c in d.components_])
-        ##print(nmf_comps.shape,)
-        #nmf_rec = (nmf_signals_f.T@nmf_comps.reshape(d.components_.shape))
-        #nmf_rec = nmf_rec.reshape(patch.shape)
-        
-        #score = np.sum(s[:rank]**2)/np.sum(s**2)
-        
-        rec  = out_rec.reshape(w_sh)
-        #rec = nmf_rec.reshape(w_sh)
+            event_maps = [top_average_frames(diff_frames[sl]) for sl in e_slices]
+            event_maps = [m*(m>0) for m in event_maps]
+            event_maps_f = [adaptive_filter_2d(m,th=3,smooth=5,keep_clusters=True) for m in event_maps]
 
-        rec_baselines = baselines.reshape(w_sh)
-        #print(rec.shape, rec_baselines.shape,dat)
+            event_on_masks = [m > th_off for m in event_maps]
+            event_on_masks_f = [threshold_object_size(expand_mask_by_median_filter(m,3,3,with_cleanup=True,min_obj_size=3),7)
+                                for m in event_on_masks]
+
+            event_on_masks_fs = [l2spline(mx*np.sqrt(0.0001+ m),0.5) for m,mx in zip(event_maps_f, event_on_masks_f)]
+            event_on_masks_fs = [core.rescale(m) if np.any(m) else m for m in event_on_masks_fs]
+
+            out_rec = zeros_like(patch)
+            for slx,em in zip(e_slices, event_on_masks_fs):
+                if np.any(em):
+                    trec = ux_signals[slx]@np.diag(s)@(vhx_s*ravel(em))
+                    out_rec[slx] = trec
+            rec  = out_rec.reshape(w_sh)
+
+        rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
         rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
+
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
 
@@ -646,6 +630,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
         
         patch = data[tsl]
         w_sh = patch.shape
+        psh = w_sh[1:]
         signals = patch.reshape(L,-1).T
 
         signals_ft = np.fft.fft(signals, axis=1)
@@ -688,7 +673,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
         recs_unshifted = np.array([_shift_signal_i(v,-p) for v,p in zip(recs,shifts)])
         proj = recs_unshifted.T
 
-        score = score.reshape(w_sh[1:])
+        score = score.reshape(psh)
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
         counts[sl] += score
@@ -1422,23 +1407,27 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
+def expand_mask_by_median_filter(m, size=3,niter=1,with_cleanup=False,min_obj_size=2):
+    out = np.copy(m)
+    for i in range(niter):
+        out += ndi.median_filter(out,size)
+        if with_cleanup:
+            out = threshold_object_size(out, min_obj_size)
+    return out
+
 def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False, reverse=False, min_cluster_size=7):
-    medfilt = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
-    details = frames - medfilt
-    #mdmap = np.median(details, axis=0)
-    #sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
+    smoothed_frames = ndi.median_filter(frames, (tsmooth,ssmooth,ssmooth))
+    details = frames - smoothed_frames
     sdmap = mad_std(frames,axis=0)
     outliers = np.abs(details) > th*sdmap
-    #s = np.zeros((3,3,3)); s[:,1,1] = 1
-    s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
-    #outliers[ndi.binary_closing(ndi.binary_opening(outliers,s),s)]=False
+    #s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
     if keep_clusters:
         clusters = threshold_object_size(outliers,min_cluster_size)
         outliers = ~clusters if reverse else outliers^clusters
     else:
         if reverse:
             outliers = ~outliers    
-    return np.where(outliers, medfilt, frames)
+    return np.where(outliers, smoothed_frames, frames)
 
 
 
@@ -1449,22 +1438,19 @@ def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clus
     outliers = np.abs(details) > th*sd
     if keep_clusters:
         clusters = threshold_object_size(outliers,min_cluster_size)
-        if reverse:
-            outliers = ~clusters
-        else:
-            outliers ^= clusters
+        outliers = ~clusters if reverse else outliers^clusters
     else:
         if reverse:
             outliers = ~outliers
     return np.where(outliers, imgf, img)
     
 
-def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
-    medfilt = ndimage.median_filter(frames, [tsmooth,ssmooth,ssmooth])
-    details = frames - medfilt
-    mdmap = np.median(details, axis=0)
-    sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
-    return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
+# def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
+#     medfilt = ndi.median_filter(frames, [tsmooth,ssmooth,ssmooth])
+#     details = frames - medfilt
+#     mdmap = np.median(details, axis=0)
+#     sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
+#     return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
 
 def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,input_is_details=False):
     if not input_is_details:

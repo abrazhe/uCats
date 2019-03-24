@@ -177,9 +177,6 @@ def process_record(fs, fname, series, args):
     if isinstance(fsc, fseq.FStackColl) and len(fsc.stacks) > 1:
         fsc = fsc.stacks[args.ca_channel]
 
-    #seems like no good?
-    fsc.data = ucats.adaptive_median_filter_frames(fsc.data,)
-
     if args.no_events:
         return
 
@@ -198,19 +195,25 @@ def process_record(fs, fname, series, args):
     #todo: take parameters from arguments to the script
     print('Going in time-slices')
     fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
-                                                  twindow=600,nhood=8,stride=4, baseline_smoothness=300,
+                                                  twindow=600,nhood=10,stride=5, baseline_smoothness=300,
                                                   spatial_filter=0, spatial_filter_th=3,
                                                   min_comps=3, spatial_min_cluster_size=5)
+
+    th1 = ucats.percentile_th_frames(fdelta,2.0)
     fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3)
-    nsdt = ucats.std_median(fdelta,axis=0)
-    th = ucats.percentile_th_frames(fdelta,args.detection_low_percentile)
+    frames_dn,benh = convert_from_varstab(fdelta, fb)    
+    #nsdt = ucats.std_median(fdelta,axis=0)
+    mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
+    mask1 = fdelta >= th1
+    mask2 = frames_dn/benh >= 0.01 # 1% change from baseline
+    mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
     #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
-    mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
-    fdelta *= mask
-    frames_dn,benh = convert_from_varstab(fdelta, fb)
+    #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
+    frames_dn *= mask_final
+
     #benh =  0.25*fb**2
     #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
-    del fb, fdelta,mask
+    del fb, fdelta,mask_final
     
     benh = fseq.from_array(benh)
     benh.meta['channel'] = 'Fbaseline'
