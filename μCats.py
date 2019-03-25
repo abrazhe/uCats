@@ -492,40 +492,78 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         if not np.any(event_tmask):
             rec = np.zeros(w_sh)
         else:
-            pipeline = lambda f: adaptive_filter_2d(f,2,smooth=10,keep_clusters=True,reverse=True,
-                                                    smoother=lambda f,smooth: smoothed_medianf(f,smooth/5,smooth))
-            Wx_s = np.array([pipeline(f) for f in W_images])
-            #Wx_s = Wx_b
-            Wx_s = Wx_s.reshape(vh.shape)
+            temporal_pipeline = fnutils.flcompose(#lambda v: ucats.adaptive_filter_1d(v,5, smooth=3,keep_clusters=True), 
+                lambda v: adaptive_filter_1d(v, th=2, smooth=5, reverse=True,keep_clusters=True),
+                lambda v: l2spline(v, 1.0)
+            )
+            spatial_pipeline = fnutils.flcompose(lambda f: smoothed_medianf(f,0.5, 3))
+            #W_smoothed = np.array([spatial_pipeline(f.reshape(psh)) for f in W]).reshape(W.shape)
             
-            diff_frames = (ux@Wx_b - baselines).reshape(-1,*psh)
+            #smoothed_signals = array([temporal_pipeline(v) for v in svd_signals])
+            smoothed_signals_c = array([temporal_pipeline(v) for v in svd_signals_c])
 
-            e_labels,nlab = ndi.label(event_tmask)
-            e_slices = ndi.find_objects(e_labels)
+            simple_rec = svd_signals_c.T@W
+            simple_rec_frames = simple_rec.reshape(w_sh)
+
+            smoothed_rec = smoothed_signals_c.T@W#_smoothed
+            smoothed_rec_frames = smoothed_rec.reshape(w_sh)
+
+            th = percentile_th_frames(simple_rec_frames[~event_tmask], 2.5)
+            #th_sd = std_median(simple_rec_frames[~event_tmask],0)
+            th_sd = mad_std(simple_rec_frames[~event_tmask],0)
+            
+            mask = (smoothed_rec_frames>th)*(smoothed_rec_frames > 3*th_sd)
+            mask = np.array([expand_mask_by_median_filter(m,with_cleanup=True, min_obj_size=4,niter=1) for m in mask],np.float32)
+            if np.any(mask):
+                mask = core.rescale(mask + ndi.gaussian_filter(mask, 0.5))
+            rec = mask * smoothed_rec_frames
+            #pipeline = lambda f: adaptive_filter_2d(f,2,smooth=15,keep_clusters=True,reverse=True,
+            #                                        smoother=lambda f,smooth: smoothed_medianf(f,smooth/5.0,smooth))
+            #pipeline = lambda f: adaptive_filter_2d(adaptive_filter_2d(f, 1, smooth=5, keep_clusters=True,reverse=True), 3)
+            #smoother=lambda f,smooth: smoothed_medianf(f,smooth/10,smooth)
+            #smoother=lambda f,smooth: smoothed_medianf(f,smooth/10,smooth)
+            #pipeline = lambda f:  adaptive_filter_2d(adaptive_filter_2d(f, th=2, smooth=10, keep_clusters=True,reverse=True, 
+            #                                                            smoother=smoother,min_cluster_size=7),
+            #                                         th=3, keep_clusters=True, min_cluster_size=5,smoother=smoother)
+            #Wx_s = np.array([pipeline(f) for f in W_images])
+            #Wx_s = Wx_b
+            #Wx_s = Wx_s.reshape(vh.shape)
+
+            #diff_frames = (ux@Wx_b - ux_biases@Wx_b).reshape(-1,*psh)
+            #diff_frames_f = (ux@Wx_s - ux_biases@Wx_s).reshape(-1,*psh)
+
+            #e_labels,nlab = ndi.label(event_tmask)
+            #e_slices = ndi.find_objects(e_labels)
 
             ###bg_map = adaptive_filter_2d(diff_frames[~event_tmask].mean(0),th=3,smooth=5)
             ###bg_sd = mad_std(diff_frames[~event_tmask],0)
             ###th_on = percentile_th_frames(diff_frames[event_tmask],5)
-            th_off = percentile_th_frames(diff_frames[~event_tmask],5)
+            #th_off = percentile_th_frames(diff_frames[~event_tmask],5)
+            #print(th_off.min(), th_off.max())
+            #th_off *= th_off > 0
+            #diff_frames_f = adaptive_median_filter(diff_frames, 2, tsmooth=5, ssmooth=1, keep_clusters=True, reverse=False)
+            #mask = (diff_frames>th_off)*ndi.binary_dilation(event_tmask,iterations=3)[:,None,None]
+            #mask = expand_mask_by_median_filter(mask,with_cleanup=True, min_obj_size=5, niter=3,)
+            #rec = diff_frames_f*mask
 
-            event_maps = [top_average_frames(diff_frames[sl]) for sl in e_slices]
-            event_maps = [m*(m>0) for m in event_maps]
-            event_maps_f = [adaptive_filter_2d(m,th=3,smooth=5,keep_clusters=True) for m in event_maps]
+            #event_maps = [top_average_frames(diff_frames[sl]) for sl in e_slices]
+            #event_maps = [m*(m>0) for m in event_maps]
+            #event_maps_f = [adaptive_filter_2d(m,th=3,smooth=5,keep_clusters=True) for m in event_maps]
 
-            event_on_masks = [m > th_off for m in event_maps]
-            event_on_masks_f = [threshold_object_size(expand_mask_by_median_filter(m,3,3,with_cleanup=True,min_obj_size=3),7)
-                                for m in event_on_masks]
+            #event_on_masks = [m > th_off for m in event_maps]
+            #event_on_masks_f = [threshold_object_size(expand_mask_by_median_filter(m,3,3,with_cleanup=True,min_obj_size=3),7)
+            #                    for m in event_on_masks]
 
-            event_on_masks_fs = [l2spline(mx*np.sqrt(0.0001+ m),0.5) for m,mx in zip(event_maps_f, event_on_masks_f)]
-            event_on_masks_fs = [core.rescale(m) if np.any(m) else m for m in event_on_masks_fs]
+            #event_on_masks_fs = [l2spline(mx*np.sqrt(0.0001+ m),0.5) for m,mx in zip(event_maps_f, event_on_masks_f)]
+            #event_on_masks_fs = [core.rescale(m) if np.any(m) else m for m in event_on_masks_fs]
 
-            out_rec = zeros_like(patch)
-            for slx,em in zip(e_slices, event_on_masks_fs):
-                if np.any(em):
-                    trec = ux_signals[slx]@(Wx_s*ravel(em))
-                    out_rec[slx] = trec
-            rec  = out_rec.reshape(w_sh)
-            rec = (ux_signals@Wx_s).reshape(w_sh)
+            #out_rec = zeros_like(patch)
+            #for slx,em in zip(e_slices, event_on_masks_fs):
+            #    if np.any(em):
+            #        trec = ux_signals[slx]@(Wx_s*ravel(em))
+            #        out_rec[slx] = trec
+            #rec  = out_rec.reshape(w_sh)
+            #rec = (ux_signals@Wx_s).reshape(w_sh)
 
         
         #rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
@@ -1432,6 +1470,19 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False
             outliers = ~outliers    
     return np.where(outliers, smoothed_frames, frames)
 
+
+def adaptive_filter_1d(v,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False, min_cluster_size=5):
+    vsmooth = smoother(v, smooth)
+    details = v-vsmooth
+    sd = mad_std(v)
+    outliers = np.abs(details) > th*sd
+    if keep_clusters:
+        clusters = threshold_object_size(outliers,min_cluster_size)
+        outliers = ~clusters if reverse else outliers^clusters
+    else:
+        if reverse:
+            outliers = ~outliers
+    return np.where(outliers, vsmooth, v)
 
 
 def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clusters=False, reverse=False, min_cluster_size=5):
