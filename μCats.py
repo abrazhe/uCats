@@ -414,6 +414,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
     if max_comps is None:
         max_comps = (nhood**2)/2
+
+    patch_size=nhood*2
+    wk = make_weighting_kern(patch_size,2.5)        
     
     def _process_loc(r,c,mask):
         sl = (slice(r-nhood,r+nhood), slice(c-nhood,c+nhood)) # don't need center here
@@ -426,8 +429,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         psh = w_sh[1:]
 
         patch = patch_frames.reshape(L,-1)
-        patch_c = patch.mean(0)
-        patch = patch - patch_c
+        patch_c = 0*patch.mean(0)
+        #patch = patch - patch_c
 
         if not(np.any(patch)):
             out_signals[tsl] += 0
@@ -441,29 +444,26 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
-
+            
+        score = np.sum(s[:rank]**2)/np.sum(s**2)
+            
         ux = u[:,:rank]
         vh = vh[:rank]
         s = s[:rank]
+
+        W = np.diag(s)@vh
         
         vh_images = vh.reshape(-1,*psh)
-        #vhx = [ndi.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
-        #vhx_threshs = [mad_std(f) for f in vh_images]
-        #vhx = np.array([np.where(np.abs(f-fx)>th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
-        #vhx = adaptive_median_filter(vh_images, th=spatial_filter_th, tsmooth=1, ssmooth=spatial_filter,
-        #                             reverse=False,keep_clusters=False)
-
+        W_images = W.reshape(-1,*psh)
         
-        
-        if spatial_filter > 1:
-            vhx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in vh_images])
-            vhx_s = vh_images
+        if spatial_filter >= 1:
+            Wx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in W_images])
         else:
-            vhx_s = vh_images
-            vhx_b = vh_images
+            Wx_s = W_images
+            Wx_b = W_images
             
-        vhx_s = vhx_s.reshape(rank,len(vh[0]))
-        vhx_b = vhx_b.reshape(rank,len(vh[0]))
+        #Wx_s = Wx_s.reshape(rank,len(vh[0]))
+        Wx_b = Wx_b.reshape(rank,len(vh[0]))
 
         svd_signals = ux.T
         if baseline_smoothness:
@@ -485,25 +485,27 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         ux_signals = signals_filtered.T
         ux_biases = biases.T
         
-        #print('\n', patch.shape, u.shape, vh.shape)
-        #ux = u[:,:rank]
-        #signals = ux@np.diag(s[:rank])@vhx_s
-        score = 1
-
-        baselines = ux_biases@np.diag(s)@vhx_b#@vhx[:rank]
-
+        baselines = ux_biases@Wx_b#@vhx[:rank]
+        rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
+        
         event_tmask = np.sum(np.abs(signals_filtered)>0,0) > 0
         if not np.any(event_tmask):
             rec = np.zeros(w_sh)
         else:
-            diff_frames = (ux@diag(s)@vh - baselines).reshape(-1,*psh)
+            pipeline = lambda f: adaptive_filter_2d(f,2,smooth=10,keep_clusters=True,reverse=True,
+                                                    smoother=lambda f,smooth: smoothed_medianf(f,smooth/5,smooth))
+            Wx_s = np.array([pipeline(f) for f in W_images])
+            #Wx_s = Wx_b
+            Wx_s = Wx_s.reshape(vh.shape)
+            
+            diff_frames = (ux@Wx_b - baselines).reshape(-1,*psh)
 
             e_labels,nlab = ndi.label(event_tmask)
             e_slices = ndi.find_objects(e_labels)
 
-            bg_map = adaptive_filter_2d(diff_frames[~event_tmask].mean(0),th=3,smooth=5)
-            bg_sd = mad_std(diff_frames[~event_tmask],0)
-            th_on = percentile_th_frames(diff_frames[event_tmask],5)
+            ###bg_map = adaptive_filter_2d(diff_frames[~event_tmask].mean(0),th=3,smooth=5)
+            ###bg_sd = mad_std(diff_frames[~event_tmask],0)
+            ###th_on = percentile_th_frames(diff_frames[event_tmask],5)
             th_off = percentile_th_frames(diff_frames[~event_tmask],5)
 
             event_maps = [top_average_frames(diff_frames[sl]) for sl in e_slices]
@@ -520,12 +522,13 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             out_rec = zeros_like(patch)
             for slx,em in zip(e_slices, event_on_masks_fs):
                 if np.any(em):
-                    trec = ux_signals[slx]@np.diag(s)@(vhx_s*ravel(em))
+                    trec = ux_signals[slx]@(Wx_s*ravel(em))
                     out_rec[slx] = trec
             rec  = out_rec.reshape(w_sh)
+            rec = (ux_signals@Wx_s).reshape(w_sh)
 
-        rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
-        rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
+        
+        #rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
 
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
