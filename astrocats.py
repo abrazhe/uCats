@@ -195,8 +195,8 @@ def process_record(fs, fname, series, args):
     #todo: take parameters from arguments to the script
     print('Going in time-slices')
     fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
-                                                  twindow=600,nhood=5,stride=2, baseline_smoothness=300,
-                                                  spatial_filter=3, spatial_filter_th=3,
+                                                  twindow=600,nhood=8,stride=4, baseline_smoothness=300,
+                                                  spatial_filter=3, 
                                                   min_comps=3, spatial_min_cluster_size=5)
 
     th1 = ucats.percentile_th_frames(fdelta,2.0)

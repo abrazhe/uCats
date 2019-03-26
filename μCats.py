@@ -411,7 +411,7 @@ def cleanup_cluster_map(m,niter=1):
 def correct_small_loads(points, affs, min_loads=5, niter=1):
     for j in range(niter):
         new_affs = np.copy(affs)
-        loads = array([sum(affs==k) for k in unique(affs)])
+        loads = array([np.sum(affs==k) for k in unique(affs)])
         if not np.any(loads < min_loads):
             continue
         grid = array([np.mean(points[affs==k],0) for k in unique(affs)])
@@ -523,7 +523,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         signals_fminus = np.array([v*labeler(-v) for v in svd_signals_c])
         signals_filtered = signals_fplus + signals_fminus
         event_tmask = np.sum(np.abs(signals_filtered)>0,0) > 0
-        
+        active_comps = np.sum(np.abs(signals_filtered)>0,1)>3 # %active component for clustering is such that was active at least for k frames 
         #ux_signals = signals_filtered.T
         #ux_biases = biases.T
         
@@ -531,13 +531,16 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
         
         
-        if not np.any(event_tmask):
+        if not np.any(active_comps):
             rec = np.zeros(w_sh)
         else:
             approx_c = svd_signals_c.T@Wx_b
             #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
-            cx = skclust.AgglomerativeClustering(rank*2,linkage='ward')
-            affs = cx.fit_predict(Wx_b.T)
+            nactive = np.sum(active_comps)
+            sys.stderr.write(' active components: %d'%nactive)
+            Wactive = Wx_b[active_comps]
+            cx = skclust.AgglomerativeClustering(nactive*2,linkage='ward')
+            affs = cx.fit_predict(Wactive.T)
             affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
             affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
             
