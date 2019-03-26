@@ -17,7 +17,8 @@ import numpy as np
 from numpy import pi
 from numpy import linalg
 
-from numpy import array,zeros,zeros_like,median,diag,ravel
+from numpy import array,zeros,zeros_like,median,diag,ravel,unique
+from numpy import arange
 from numpy.linalg import norm, lstsq, svd, eig
 from numpy.random import randn
 
@@ -386,6 +387,39 @@ def top_average_frames(frames,percentile=85):
             out[r,c] = np.mean(v[v>=p])
     return out
 
+
+@jit
+def cleanup_cluster_map(m,niter=1):
+    Nr,Nc = m.shape
+    m = np.copy(m)
+    for j in range(niter):
+        for r in range(Nr):
+            for c in range(Nc):
+                me = m[r,c]
+                neighbors = array([m[(r+1)%Nr,c], m[(r-1)%Nr,c],  m[r,(c+1)%Nc],  m[r,(c-1)%Nc]])
+                if not np.any(neighbors==me):
+                    m[r,c] = neighbors[np.random.randint(len(neighbors))]
+    return m
+
+
+def correct_small_loads(points, affs, min_loads=5, niter=1):
+    for j in range(niter):
+        new_affs = np.copy(affs)
+        loads = array([sum(affs==k) for k in unique(affs)])
+        if not np.any(loads < min_loads):
+            continue
+        grid = array([np.mean(points[affs==k],0) for k in unique(affs)])
+        point_ind = arange(len(points))
+        for li in np.where(loads < min_loads)[0]:
+            for point,ind in zip(points[affs==li], point_ind[affs==li]):
+                dists = cluster.metrics.euclidean(point,grid)
+                dists[li] = np.amax(dists) + 1
+                k = np.argmin(dists)
+                new_affs[ind] = k
+        affs = new_affs
+    return new_affs
+
+
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
                                    min_comps = 1,
@@ -491,8 +525,11 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         if not np.any(event_tmask):
             rec = np.zeros(w_sh)
         else:
-            approx_c = svd_signals_c.T@W
-            affs = cluster.som(W.T,(rank*2,1),min_reassign=1)
+            approx_c = svd_signals_c.T@Wx_b
+            affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
+            affs = correct_small_loads(W.T,affs,min_loads=9,niter=10)
+            affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
+            
             cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
             #cbiases = array([find_bias(v) for v in cluster_signals])        
             csignals_filtered = array([simple_pipeline_(v) for v in cluster_signals])
