@@ -375,6 +375,12 @@ def nmf_labeler(y,th=1):
     peaks = ys>=th*sigma
     return y*select_overlapping(structures,peaks)
 
+def convert_from_varstab(df,b):
+    "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
+    bc = b**2/4
+    dfc =  (df**2 + 2*df*b)/4
+    return dfc, bc    
+
 
 def top_average_frames(frames,percentile=85):
     sh = frames.shape
@@ -419,6 +425,7 @@ def correct_small_loads(points, affs, min_loads=5, niter=1):
         affs = new_affs
     return new_affs
 
+from sklearn import cluster as skclust
 
 def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    ncomp=None,
@@ -474,7 +481,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         # (patch is now Nframes x Npixels, u will hold temporal components)
         u,s,vh = np.linalg.svd(patch,full_matrices=False)
         if ncomp is None:
-            rank = min(max(min_comps, min_ncomp(s, patch.shape)+1), max_comps)
+            rank = np.int(min(max(min_comps, min_ncomp(s, patch.shape)+1), max_comps))
+            rank = (min(np.min(patch.shape)-1, rank))
+            #print('\n\n\n rank ', rank, patch.shape, u.shape, s.shape, vh.shape)
             sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
@@ -526,8 +535,10 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rec = np.zeros(w_sh)
         else:
             approx_c = svd_signals_c.T@Wx_b
-            affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
-            affs = correct_small_loads(W.T,affs,min_loads=9,niter=10)
+            #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
+            cx = skclust.AgglomerativeClustering(rank*2,linkage='ward')
+            affs = cx.fit_predict(Wx_b.T)
+            affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
             affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
             
             cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
@@ -873,7 +884,7 @@ def _patch_denoise_nmf(data,stride=2, nhood=5, ncomp=None,
         
         X = patch.reshape(L,-1)
         u,s,vh = svd(X,False)
-        rank = min(max_ncomp, min_ncomp(s,X.shape) + 1) if ncomp is None else ncomp
+        rank = min(np.min(X.shape), min(max_ncomp, min_ncomp(s,X.shape) + 1)) if ncomp is None else ncomp
         if ncomp is None:
             sys.stderr.write('  rank: %d  '%rank)
 

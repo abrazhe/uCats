@@ -93,7 +93,7 @@ def main():
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
         '--detection-loc-nhood':dict(default=8,type=int),
         '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
-        '--event-peak-threshold':dict(default=0.1, type=float,help='event must contain a peak with at least this ΔF/F value'),
+        '--event-peak-threshold':dict(default=0.085, type=float,help='event must contain a peak with at least this ΔF/F value'),
         '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
         '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
         '--bitrate':dict(default=32000,type=float, help='bitrate of exported movie'),
@@ -195,13 +195,13 @@ def process_record(fs, fname, series, args):
     #todo: take parameters from arguments to the script
     print('Going in time-slices')
     fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
-                                                  twindow=600,nhood=10,stride=5, baseline_smoothness=300,
-                                                  spatial_filter=0, spatial_filter_th=3,
+                                                  twindow=600,nhood=5,stride=2, baseline_smoothness=300,
+                                                  spatial_filter=3, spatial_filter_th=3,
                                                   min_comps=3, spatial_min_cluster_size=5)
 
     th1 = ucats.percentile_th_frames(fdelta,2.0)
-    fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3)
-    frames_dn,benh = convert_from_varstab(fdelta, fb)    
+    fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
+    frames_dn,benh = ucats.convert_from_varstab(fdelta, fb)    
     #nsdt = ucats.std_median(fdelta,axis=0)
     mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
     mask1 = fdelta >= th1
@@ -305,7 +305,7 @@ def process_record(fs, fname, series, args):
         #print(' -- Combined the two  masks ')
         
         fsx = fseq.from_array(dfof)
-        fsx.meta['channel'] = 'newrec7a'
+        fsx.meta['channel'] = 'newrec8'
         #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
         #fsx = fseq.from_array(fsx)
         #fsx.meta['channel'] = '-newrec5-medians-'
