@@ -200,7 +200,7 @@ def process_record(fs, fname, series, args):
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
         print('calculating baseline fluorescence')
-        benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20)
+        benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
 
@@ -218,7 +218,7 @@ def process_record(fs, fname, series, args):
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
         th1 = ucats.percentile_th_frames(fdelta,2.0)
-        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,mad_std(xt,axis=0))
+        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt,axis=0))
         fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
         frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + correction_bias)    
         #nsdt = ucats.std_median(fdelta,axis=0)
@@ -229,7 +229,7 @@ def process_record(fs, fname, series, args):
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
         frames_dn *= mask_final
-
+        dfof = frames_dn/benh
         #benh =  0.25*fb**2
         #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
         del fb, fdelta,mask_final
@@ -250,7 +250,6 @@ def process_record(fs, fname, series, args):
         #plt.tight_layout()
         #f.savefig(nametag+'-colored_mask.png')
         #plt.close(f)
-        
         fsx = fseq.from_array(dfof)
         fsx.meta['channel'] = 'newrec8'
         
@@ -273,7 +272,7 @@ def process_record(fs, fname, series, args):
     if args.verbose: print('Making movies of detected activity')        
     #fsout = fseq.FStackColl([fsc,  fsx])
     #frames_out = benh.data*(asarray(fsx.data,float32)+1)
-    #frames_out = benh.data
+    frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
     fsout = fseq.FStackColl([benh,  fsx])        
     p = ui.Picker(fsout); p.start()
