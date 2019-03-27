@@ -190,126 +190,69 @@ def process_record(fs, fname, series, args):
     else:
         frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
 
-    # II. Denoising frames
-    print('Denoising frames and separating background via block-SVD in sqrt-ed data')
-    #todo: take parameters from arguments to the script
-    print('Going in time-slices')
-    fdelta, fb = ucats.block_svd_separate_tslices(2*np.sqrt(frames),
-                                                  twindow=600,nhood=8,stride=4, baseline_smoothness=300,
-                                                  spatial_filter=3, 
-                                                  min_comps=3, spatial_min_cluster_size=5)
-
-    th1 = ucats.percentile_th_frames(fdelta,2.0)
-    fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
-    frames_dn,benh = ucats.convert_from_varstab(fdelta, fb)    
-    #nsdt = ucats.std_median(fdelta,axis=0)
-    mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
-    mask1 = fdelta >= th1
-    mask2 = frames_dn/benh >= 0.01 # 1% change from baseline
-    mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
-    #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
-    #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
-    frames_dn *= mask_final
-
-    #benh =  0.25*fb**2
-    #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
-    del fb, fdelta,mask_final
     
-    benh = fseq.from_array(benh)
-    benh.meta['channel'] = 'Fbaseline'
-    
-    # III. Calculate ΔF/F
-    print('Calculating relative fluorescence changes')
+    # II. Process data
+    benh = None
     detected_name = nametag+'-detected.h5'
-    if args.no_skip_dark_areas:
-        print('calculating well-stained and poorly-stained areas')
-        colored_mask = dark_area_mask(benh.data.mean(0))
-    else:
-        print('no color mask asked for')
-        colored_mask = np.ones(benh[0].shape, np.bool)
-
-    f,ax = plt.subplots(1,1,figsize=(8,8));
-    ax.imshow(benh.data.mean(0),cmap='gray')
-    ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
-    plt.tight_layout()
-    f.savefig(nametag+'-colored_mask.png')
-    plt.close(f)
-
-    
-    # IV. Process data
     if os.path.exists(detected_name):
         print('loading existing results of event detection:', detected_name)
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
+        print('calculating baseline fluorescence')
+        benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20)
+        benh = fseq.from_array(benh)
+        benh.meta['channel'] = 'Fbaseline'
+
     else:
-#         print("Calculating 'augmented' data")
-#         print(' - denoising ΔF/F frames')
-#         dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
-#                                                 npc=args.signal_patch_denoise_npc,
-#                                                 temporal_filter=args.signal_patch_denoise_temporal_size,
-#                                                 spatial_filter=args.signal_patch_denoise_spatial_size,
-#                                                 mask_of_interest=colored_mask)
-#         if args.save_denoised_dfof:
-#             fs_tmp_ = fseq.from_array(dfof_cleaned)
-#             fs_tmp_.meta['channel'] = 'dfof_denoised'
-#             fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
-#         print(' - Detecting and cleaning up events...')
+        print('Denoising frames and separating background via block-SVD in sqrt-ed data')
+        #todo: take parameters from arguments to the script
+        print('Going in time-slices')
+        xt = 2*np.sqrt(frames)
+        fdelta, fb = ucats.block_svd_separate_tslices(xt,
+                                                      twindow=600,nhood=8,stride=4, baseline_smoothness=300,
+                                                      spatial_filter=3, 
+                                                      min_comps=3,
+                                                      spatial_min_cluster_size=5)
 
-#         pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction)
-#         labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
-#         labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+        # III. Calculate ΔF/F
+        print('Calculating relative fluorescence changes')
+        th1 = ucats.percentile_th_frames(fdelta,2.0)
+        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,mad_std(xt,axis=0))
+        fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
+        frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + correction_bias)    
+        #nsdt = ucats.std_median(fdelta,axis=0)
+        mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
+        mask1 = fdelta >= th1
+        mask2 = frames_dn/benh >= 0.01 # 1% change from baseline
+        mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
+        #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
+        #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
+        frames_dn *= mask_final
 
-#         fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
-#                               labeler = labeler,
-#                               pipeline_kw=pipeline_kwargs,
-#                               labeler_kw=labeler_kwargs,
-#                               mask_of_interest=colored_mask)
-        print("Calculating 'augmented' data")        #print(' - denoising ΔF/F frames')
-        #dfof_cleaned = ucats.patch_pca_denoise2(fsc.data/benh.data-1,
-        #                                        npc=args.signal_patch_denoise_npc,
-        #                                        temporal_filter=args.signal_patch_denoise_temporal_size,
-        #                                        spatial_filter=args.signal_patch_denoise_spatial_size,
-        #                                        mask_of_interest=colored_mask)
-        #if args.save_denoised_dfof:
-        #    fs_tmp_ = fseq.from_array(dfof_cleaned)
-        #    fs_tmp_.meta['channel'] = 'dfof_denoised'
-        #    fs_tmp_.to_hdf5(nametag+ '-dfof-denoised.h5',mode='w')
-        print(' - Detecting and cleaning up events...')
+        #benh =  0.25*fb**2
+        #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
+        del fb, fdelta,mask_final
 
-        #pipeline_kwargs = dict(smoothed_rec=args.detection_smoothed_reconstruction) 
-        #labeler_kwargs = dict(tau=args.detection_tau_smooth, percentile_low=args.detection_low_percentile)
-        #labeler = ucats.percentile_label_lj if args.detection_do_jitter else ucats.percentile_label
+        benh = fseq.from_array(benh)
+        benh.meta['channel'] = 'Fbaseline'
 
-        #fsx = ucats.make_enh4(dfof_cleaned, kind='pca', nhood=args.detection_loc_nhood,
-        #                      labeler = labeler,
-        #                      pipeline_kw=pipeline_kwargs,
-        #                      labeler_kw=labeler_kwargs,
-        #                      mask_of_interest=colored_mask)
-        dfof = (frames_dn/benh.data).astype(np.float32)
-        dfof0 = (frames/benh.data - 1).astype(np.float32)
+        #if args.no_skip_dark_areas:
+        #    print('calculating well-stained and poorly-stained areas')
+        #    colored_mask = dark_area_mask(benh.data.mean(0))
+        #else:
+        #    print('no color mask asked for')
+        #    colored_mask = np.ones(benh[0].shape, np.bool)
 
-        #nsd0 = ucats.mad_std(dfof0, axis=0)
-        #th = ucats.percentile_th_frames(dfof,args.detection_low_percentile)
-        #mask_simple1 = (dfof > th)*(dfof>0.05)
-        #mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
-        #mask_simple1 = array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
-        #print(' -- Done percentile-based masks ')
-        
-        #mask_simple2 = (dfof>nsd0)
-        #mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
-        #mask_simple2 = array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
-        #print(' -- Done s.d.-based masks ')
-        
-        #mask_final = ucats.select_overlapping(mask_simple2, mask_simple1)
-        #print(' -- Combined the two  masks ')
+        #f,ax = plt.subplots(1,1,figsize=(8,8));
+        #ax.imshow(benh.data.mean(0),cmap='gray')
+        #ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
+        #plt.tight_layout()
+        #f.savefig(nametag+'-colored_mask.png')
+        #plt.close(f)
         
         fsx = fseq.from_array(dfof)
         fsx.meta['channel'] = 'newrec8'
-        #fsx,_,_ = ucats.find_events_by_median_filtering(dfof)
-        #fsx = fseq.from_array(fsx)
-        #fsx.meta['channel'] = '-newrec5-medians-'
-        #fsx = ucats.make_enh5(dfof, nhood=args.detection_loc_nhood, verbose=args.verbose)
         
         coll_ = ucats.EventCollection(fsx.data, 
                                       threshold=args.event_segmentation_threshold,                                     
@@ -330,9 +273,9 @@ def process_record(fs, fname, series, args):
     if args.verbose: print('Making movies of detected activity')        
     #fsout = fseq.FStackColl([fsc,  fsx])
     #frames_out = benh.data*(asarray(fsx.data,float32)+1)
-    frames_out = benh.data
+    #frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
-    fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])        
+    fsout = fseq.FStackColl([benh,  fsx])        
     p = ui.Picker(fsout); p.start()
     p0 = ui.Picker(fseq.FStackColl([fsc]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)

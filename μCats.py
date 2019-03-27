@@ -435,7 +435,6 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    spatial_filter_th=5,
                                    spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
-                                   baseline_post_smooth=10,
                                    detection_percentile_low=25,
                                    mask_of_interest=None):
     sh = data.shape
@@ -526,7 +525,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         active_comps = np.sum(np.abs(signals_filtered)>0,1)>3 # %active component for clustering is such that was active at least for k frames 
         #ux_signals = signals_filtered.T
         #ux_biases = biases.T
-        
+        nactive = np.sum(active_comps)    
+        sys.stderr.write(' active components: %02d'%nactive)
+
         baselines = biases.T@Wx_b#@vhx[:rank]
         rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
         
@@ -536,96 +537,18 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         else:
             approx_c = svd_signals_c.T@Wx_b
             #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
-            nactive = np.sum(active_comps)
-            sys.stderr.write(' active components: %d'%nactive)
             Wactive = Wx_b[active_comps]
-            cx = skclust.AgglomerativeClustering(nactive*2,linkage='ward')
+            cx = skclust.AgglomerativeClustering(nhood*2,linkage='ward')
             affs = cx.fit_predict(Wactive.T)
             affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
             affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
             
             cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
             #cbiases = array([find_bias(v) for v in cluster_signals])        
-            csignals_filtered = array([simple_pipeline_(v) for v in cluster_signals])
+            csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v)) for v in cluster_signals])
             som_spatial_comps = array([affs==k for k in np.unique(affs)])
             rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
-
-        #    temporal_pipeline = fnutils.flcompose(#lambda v: ucats.adaptive_filter_1d(v,5, smooth=3,keep_clusters=True), 
-        #        lambda v: adaptive_filter_1d(v, th=2, smooth=5, reverse=True,keep_clusters=True),
-        #        lambda v: l2spline(v, 1.0)
-        #    )
-        #    spatial_pipeline = fnutils.flcompose(lambda f: smoothed_medianf(f,0.5, 3))
-        #    #W_smoothed = np.array([spatial_pipeline(f.reshape(psh)) for f in W]).reshape(W.shape)
-        #    
-        #    #smoothed_signals = array([temporal_pipeline(v) for v in svd_signals])
-        #    smoothed_signals_c = array([temporal_pipeline(v) for v in svd_signals_c])
-
-            # simple_rec = svd_signals_c.T@W
-            # simple_rec_frames = simple_rec.reshape(w_sh)
-
-            # smoothed_rec = smoothed_signals_c.T@W#_smoothed
-            # smoothed_rec_frames = smoothed_rec.reshape(w_sh)
-
-            # th = percentile_th_frames(simple_rec_frames[~event_tmask], 2.5)
-            # #th_sd = std_median(simple_rec_frames[~event_tmask],0)
-            # th_sd = mad_std(simple_rec_frames[~event_tmask],0)
-            
-            # mask = (smoothed_rec_frames>th)*(smoothed_rec_frames > 3*th_sd)
-            # mask = np.array([expand_mask_by_median_filter(m,with_cleanup=True, min_obj_size=4,niter=1) for m in mask],np.float32)
-            # if np.any(mask):
-            #     mask = core.rescale(mask + ndi.gaussian_filter(mask, 0.5))
-            # rec = mask * smoothed_rec_frames
-            # #pipeline = lambda f: adaptive_filter_2d(f,2,smooth=15,keep_clusters=True,reverse=True,
-            # #                                        smoother=lambda f,smooth: smoothed_medianf(f,smooth/5.0,smooth))
-            # #pipeline = lambda f: adaptive_filter_2d(adaptive_filter_2d(f, 1, smooth=5, keep_clusters=True,reverse=True), 3)
-            # #smoother=lambda f,smooth: smoothed_medianf(f,smooth/10,smooth)
-            # #smoother=lambda f,smooth: smoothed_medianf(f,smooth/10,smooth)
-            # #pipeline = lambda f:  adaptive_filter_2d(adaptive_filter_2d(f, th=2, smooth=10, keep_clusters=True,reverse=True, 
-            # #                                                            smoother=smoother,min_cluster_size=7),
-            # #                                         th=3, keep_clusters=True, min_cluster_size=5,smoother=smoother)
-            # #Wx_s = np.array([pipeline(f) for f in W_images])
-            # #Wx_s = Wx_b
-            # #Wx_s = Wx_s.reshape(vh.shape)
-
-            # #diff_frames = (ux@Wx_b - ux_biases@Wx_b).reshape(-1,*psh)
-            # #diff_frames_f = (ux@Wx_s - ux_biases@Wx_s).reshape(-1,*psh)
-
-            # #e_labels,nlab = ndi.label(event_tmask)
-            # #e_slices = ndi.find_objects(e_labels)
-
-            # ###bg_map = adaptive_filter_2d(diff_frames[~event_tmask].mean(0),th=3,smooth=5)
-            # ###bg_sd = mad_std(diff_frames[~event_tmask],0)
-            # ###th_on = percentile_th_frames(diff_frames[event_tmask],5)
-            # #th_off = percentile_th_frames(diff_frames[~event_tmask],5)
-            # #print(th_off.min(), th_off.max())
-            # #th_off *= th_off > 0
-            # #diff_frames_f = adaptive_median_filter(diff_frames, 2, tsmooth=5, ssmooth=1, keep_clusters=True, reverse=False)
-            # #mask = (diff_frames>th_off)*ndi.binary_dilation(event_tmask,iterations=3)[:,None,None]
-            # #mask = expand_mask_by_median_filter(mask,with_cleanup=True, min_obj_size=5, niter=3,)
-            # #rec = diff_frames_f*mask
-
-            # #event_maps = [top_average_frames(diff_frames[sl]) for sl in e_slices]
-            # #event_maps = [m*(m>0) for m in event_maps]
-            # #event_maps_f = [adaptive_filter_2d(m,th=3,smooth=5,keep_clusters=True) for m in event_maps]
-
-            # #event_on_masks = [m > th_off for m in event_maps]
-            # #event_on_masks_f = [threshold_object_size(expand_mask_by_median_filter(m,3,3,with_cleanup=True,min_obj_size=3),7)
-            # #                    for m in event_on_masks]
-
-            # #event_on_masks_fs = [l2spline(mx*np.sqrt(0.0001+ m),0.5) for m,mx in zip(event_maps_f, event_on_masks_f)]
-            # #event_on_masks_fs = [core.rescale(m) if np.any(m) else m for m in event_on_masks_fs]
-
-            # #out_rec = zeros_like(patch)
-            # #for slx,em in zip(e_slices, event_on_masks_fs):
-            # #    if np.any(em):
-            # #        trec = ux_signals[slx]@(Wx_s*ravel(em))
-            # #        out_rec[slx] = trec
-            # #rec  = out_rec.reshape(w_sh)
-            # #rec = (ux_signals@Wx_s).reshape(w_sh)
-
         
-        #rec_baselines += find_bias_frames(data[tsl]-rec-rec_baselines,3,mad_std(data[tsl],0))
-
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
 
@@ -647,9 +570,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                 out_signals[:,r,c] = 0
             if counts_b[r,c] == 0:
                 out_baselines[:,r,c] = 0
-    if baseline_post_smooth > 0:
-        out_baselines = ndi.gaussian_filter(out_baselines, (baseline_post_smooth, 0, 0))
-    return out_signals,out_baselines
+    deltas = data-out_signals-out_baselines
+    #correction_bias = find_bias_frames(deltas, 3, mad_std(deltas,0)) 
+    return out_signals, out_baselines#+correction_bias
 
 
 
@@ -1440,14 +1363,14 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
-    b2 = b + np.median(d[d<th*ns]) # correct scalar shift 
+    b2 = b + np.median(d[np.abs(d)<=th*ns]) # correct scalar shift 
     return b2
 
 
 def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    return np.median(y[y<=np.median(y)+th*ns])
+    return np.median(y[np.abs(y-np.median(y)) <= th*ns])
 
 
 @jit
@@ -2230,7 +2153,7 @@ def make_enh4(frames, pipeline=simple_pipeline_,
     if pipeline_kw is None:
         pipeline_kw = {}
     pipeline_kw.update(labeler=labeler,labeler_kw=labeler_kw)
-    coll_enh = process_signals_parallel(coll,pipeline=pipeline, pipeline_kw=pipeline_kw)
+    coll_enh = process_signals_parallel(coll,pipeline=pipeline, pipeline_kw=pipeline_kw,)
     print('Time-signals processed, recombining to video...')
     out = combine_weighted_signals(coll_enh,frames.shape)
     fsx = fseq.from_array(out)
@@ -2277,6 +2200,7 @@ def block_svd_separate_tslices(frames, twindow=200,
                                mask_of_interest=None,
                                th = 0.05,
                                verbose=True,
+                               baseline_post_smooth=10,
                                **denoiser_kw):
     
     L = len(frames)
@@ -2307,7 +2231,12 @@ def block_svd_separate_tslices(frames, twindow=200,
         if verbose:
             sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
         
-    return out_s/counts[:,None,None],out_b/counts[:,None,None]
+    out_s =  out_s/counts[:,None,None]
+    out_b = out_b/counts[:,None,None]
+    if baseline_post_smooth > 0:
+        out_b = ndi.gaussian_filter(out_b, (baseline_post_smooth, 0, 0))
+    return out_s, out_b
+    
 
 
 def make_enh5(dfof, twindow=50, nhood=5, stride=2, temporal_filter=3, verbose=False):
@@ -2356,7 +2285,9 @@ def process_framestack(frames,min_area=9,verbose=False,
     from imfun import fseq
     if verbose:
         print('calculating baseline F0(t)')
-    fs_f0 = get_baseline_frames(frames[:],baseline_fn=baseline_fn, baseline_kw=baseline_kw)
+    #fs_f0 = get_baseline_frames(frames[:],baseline_fn=baseline_fn, baseline_kw=baseline_kw)
+    fs_f0 = calculate_baseline_pca_asym(frames[:],verbose=True,niter=20)
+    fs_f0 = fseq.from_array(fs_f0)
     fs_f0.meta['channel'] = 'F0'
 
     dfof= frames/fs_f0.data - 1
