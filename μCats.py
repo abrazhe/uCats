@@ -436,6 +436,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
                                    detection_percentile_low=25,
+                                   with_clusters=True,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
@@ -536,18 +537,21 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rec = np.zeros(w_sh)
         else:
             approx_c = svd_signals_c.T@Wx_b
-            #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
-            Wactive = Wx_b[active_comps]
-            cx = skclust.AgglomerativeClustering(nhood*2,linkage='ward')
-            affs = cx.fit_predict(Wactive.T)
-            affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
-            affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
-            
-            cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
-            #cbiases = array([find_bias(v) for v in cluster_signals])        
-            csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v)) for v in cluster_signals])
-            som_spatial_comps = array([affs==k for k in np.unique(affs)])
-            rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
+            if not with_clusters:
+                rec = (signals_filtered.T@Wx_b).reshape(w_sh)
+            else:
+                #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
+                Wactive = Wx_b[active_comps]
+                cx = skclust.AgglomerativeClustering(nhood*2,linkage='ward')
+                affs = cx.fit_predict(Wactive.T)
+                affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
+                affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
+
+                cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
+                #cbiases = array([find_bias(v) for v in cluster_signals])        
+                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v)) for v in cluster_signals])
+                som_spatial_comps = array([affs==k for k in np.unique(affs)])
+                rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
         
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
@@ -681,7 +685,8 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
             vhx0 = vh0[:rank]
         ux0 = u0[:,:rank]
         recs = ux0@np.diag(s0[:rank])@vhx0
-        score = np.sum(s0[:rank]**2)/np.sum(s0**2)*np.ones(len(signals))
+        #score = np.sum(s0[:rank]**2)/np.sum(s0**2)*np.ones(len(signals))
+        score = 1
         
         if np.sum(coherent_mask) > 2*rank:
             u,s,vh = np.linalg.svd(vecs_shifted[coherent_mask],False)
