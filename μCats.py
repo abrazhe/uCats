@@ -397,32 +397,37 @@ def top_average_frames(frames,percentile=85):
 @jit
 def cleanup_cluster_map(m,niter=1):
     Nr,Nc = m.shape
-    m = np.copy(m)
+    cval = np.min(m)-1
+    m = np.pad(m,1, mode='constant',constant_values=cval)
     for j in range(niter):
-        for r in range(Nr):
-            for c in range(Nc):
+        for r in range(1,Nr):
+            for c in range(1,Nc):
                 me = m[r,c]
-                neighbors = array([m[(r+1)%Nr,c], m[(r-1)%Nr,c],  m[r,(c+1)%Nc],  m[r,(c-1)%Nc]])
+                neighbors = array([m[(r+1),c], m[(r-1),c],  m[r,(c+1)],  m[r,(c-1)]])
                 if not np.any(neighbors==me):
+                    neighbors = neighbors[neighbors>cval]
                     m[r,c] = neighbors[np.random.randint(len(neighbors))]
-    return m
+    return m[1:-1,1:-1]
 
 
 def correct_small_loads(points, affs, min_loads=5, niter=1):
     for j in range(niter):
         new_affs = np.copy(affs)
-        loads = array([np.sum(affs==k) for k in unique(affs)])
+        labels = unique(affs)
+        loads = array([np.sum(affs==k) for k in labels])
         if not np.any(loads < min_loads):
-            continue
-        grid = array([np.mean(points[affs==k],0) for k in unique(affs)])
+            break
+        centers = array([np.mean(points[affs==k],0) for k in labels])
         point_ind = arange(len(points))
         for li in np.where(loads < min_loads)[0]:
-            for point,ind in zip(points[affs==li], point_ind[affs==li]):
-                dists = cluster.metrics.euclidean(point,grid)
-                dists[li] = np.amax(dists) + 1
+            cond = affs==labels[li]
+            for point,ind in zip(points[cond], point_ind[cond]):
+                dists = cluster.metrics.euclidean(point,centers)
+                dists[loads < min_loads] = np.amax(dists)+1000
                 k = np.argmin(dists)
                 new_affs[ind] = k
-        affs = new_affs
+
+        affs = new_affs.copy()
     return new_affs
 
 from sklearn import cluster as skclust
@@ -435,7 +440,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    spatial_filter_th=5,
                                    spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
-                                   detection_percentile_low=25,
+                                   svd_detection_plow=25,
+                                   cluster_detection_plow=5,
                                    with_clusters=True,
                                    mask_of_interest=None):
     sh = data.shape
@@ -488,7 +494,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         else:
             rank = ncomp
             
-        score = np.sum(s[:rank]**2)/np.sum(s**2)
+        #score = np.sum(s[:rank]**2)/np.sum(s**2)
+        score = 1 
             
         ux = u[:,:rank]
         vh = vh[:rank]
@@ -496,18 +503,13 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         W = np.diag(s)@vh
         
-        vh_images = vh.reshape(-1,*psh)
-        W_images = W.reshape(-1,*psh)
-        
         if spatial_filter >= 1:
+            W_images = W.reshape(-1,*psh)
             Wx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in W_images])
+            Wx_b = Wx_b.reshape(rank,len(vh[0]))
         else:
-            Wx_s = W_images
-            Wx_b = W_images
+            Wx_b = W
             
-        #Wx_s = Wx_s.reshape(rank,len(vh[0]))
-        Wx_b = Wx_b.reshape(rank,len(vh[0]))
-
         svd_signals = ux.T
         if baseline_smoothness:
             biases = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
@@ -518,7 +520,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
 
         svd_signals_c = svd_signals - biases
                 
-        labeler = partial(percentile_label, percentile_low=detection_percentile_low, tau=2)
+        labeler = partial(percentile_label, percentile_low=svd_detection_plow, tau=2)
         signals_fplus = np.array([v*labeler(v) for v in svd_signals_c])
         signals_fminus = np.array([v*labeler(-v) for v in svd_signals_c])
         signals_filtered = signals_fplus + signals_fminus
@@ -526,8 +528,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         active_comps = np.sum(np.abs(signals_filtered)>0,1)>3 # %active component for clustering is such that was active at least for k frames 
         #ux_signals = signals_filtered.T
         #ux_biases = biases.T
-        nactive = np.sum(active_comps)    
-        sys.stderr.write(' active components: %02d'%nactive)
+        nactive = np.sum(active_comps)
+        sys.stderr.write(' active components: %02d                   '%nactive)
 
         baselines = biases.T@Wx_b#@vhx[:rank]
         rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
@@ -536,20 +538,24 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         if not np.any(active_comps):
             rec = np.zeros(w_sh)
         else:
-            approx_c = svd_signals_c.T@Wx_b
             if not with_clusters:
                 rec = (signals_filtered.T@Wx_b).reshape(w_sh)
             else:
                 #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
                 Wactive = Wx_b[active_comps]
-                cx = skclust.AgglomerativeClustering(nhood*2,linkage='ward')
+                nclusters = nactive*4 # todo: make a parameter to choose.
+                cx = skclust.AgglomerativeClustering(nclusters,affinity='l1',linkage='average')
                 affs = cx.fit_predict(Wactive.T)
-                affs = correct_small_loads(Wx_b.T,affs,min_loads=9,niter=10)
-                affs_map = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
+                affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=5)
+                affs = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
+                affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=2)
 
+                approx_c = svd_signals_c.T@Wx_b
+                #approx_c = svd_signals_c[active_comps].T@Wactive
                 cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
-                #cbiases = array([find_bias(v) for v in cluster_signals])        
-                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v)) for v in cluster_signals])
+                #cbiases = array([find_bias(v) for v in cluster_signals])
+                labeler = partial(percentile_label, percentile_low=cluster_detection_plow, tau=2)
+                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v),labeler=labeler ) for v in cluster_signals])
                 som_spatial_comps = array([affs==k for k in np.unique(affs)])
                 rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
         
@@ -778,85 +784,85 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
                 out[:,r,c] = 0
     return out
 
-from sklearn import decomposition as skd
-from skimage import filters as skf
-def _patch_denoise_nmf(data,stride=2, nhood=5, ncomp=None,
-                       smooth_baseline=False,
-                       max_ncomp=None,
-                       temporal_filter = None,
-                       mask_of_interest=None):
-    sh = data.shape
-    L = sh[0]
-    if max_ncomp is None:
-        max_ncomp = 0.25*(2*nhood+1)**2
-    #if mask_of_interest is None:
-    #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
-    out = np.zeros(sh,_dtype_)
-    counts = np.zeros(sh[1:],_dtype_)
-    if mask_of_interest is None:
-        mask=np.ones(counts.shape,bool)
-    else:
-        mask = mask_of_interest
-    Ln = (2*nhood+1)**2
+# from sklearn import decomposition as skd
+# from skimage import filters as skf
+# def _patch_denoise_nmf(data,stride=2, nhood=5, ncomp=None,
+#                        smooth_baseline=False,
+#                        max_ncomp=None,
+#                        temporal_filter = None,
+#                        mask_of_interest=None):
+#     sh = data.shape
+#     L = sh[0]
+#     if max_ncomp is None:
+#         max_ncomp = 0.25*(2*nhood+1)**2
+#     #if mask_of_interest is None:
+#     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
+#     out = np.zeros(sh,_dtype_)
+#     counts = np.zeros(sh[1:],_dtype_)
+#     if mask_of_interest is None:
+#         mask=np.ones(counts.shape,bool)
+#     else:
+#         mask = mask_of_interest
+#     Ln = (2*nhood+1)**2
 
-    #preproc = lambda y: core.rescale(y)
+#     #preproc = lambda y: core.rescale(y)
 
-    #tmp_signals = np.zeros()
-    tv = np.arange(L)
+#     #tmp_signals = np.zeros()
+#     tv = np.arange(L)
 
-    def _process_loc(r,c):
-        sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
-        tsl = (slice(None),)+sl
+#     def _process_loc(r,c):
+#         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
+#         tsl = (slice(None),)+sl
 
-        patch = data[tsl]
-        lift = patch.min(0)
+#         patch = data[tsl]
+#         lift = patch.min(0)
 
-        patch = patch-lift # precotion against negative values in data
+#         patch = patch-lift # precotion against negative values in data
         
-        X = patch.reshape(L,-1)
-        u,s,vh = svd(X,False)
-        rank = min(np.min(X.shape), min(max_ncomp, min_ncomp(s,X.shape) + 1)) if ncomp is None else ncomp
-        if ncomp is None:
-            sys.stderr.write('  rank: %d  '%rank)
+#         X = patch.reshape(L,-1)
+#         u,s,vh = svd(X,False)
+#         rank = min(np.min(X.shape), min(max_ncomp, min_ncomp(s,X.shape) + 1)) if ncomp is None else ncomp
+#         if ncomp is None:
+#             sys.stderr.write('  rank: %d  '%rank)
 
-        d = skd.NMF(rank,l1_ratio=0.95,init='nndsvdar')#,beta_loss='kullback-leibler',solver='mu')
-        nmf_signals = d.fit_transform(X).T
-        nmf_comps = np.array([m*opening_of_closing(m > 0.5*skf.threshold_otsu(m)) for m in d.components_])
+#         d = skd.NMF(rank,l1_ratio=0.95,init='nndsvdar')#,beta_loss='kullback-leibler',solver='mu')
+#         nmf_signals = d.fit_transform(X).T
+#         nmf_comps = np.array([m*opening_of_closing(m > 0.5*skf.threshold_otsu(m)) for m in d.components_])
 
 
-        #nmf_biases = np.array([find_bias(v) for v in nmf_signals]).reshape(-1,1)
-        #nmf_biases = np.array([multi_scale_simple_baseline(v) for v in nmf_signals])
-        if smooth_baseline:
-            nmf_biases = np.array([simple_baseline(v,50,smooth=50) for v in nmf_signals])
-        else:
-            nmf_biases = np.array([find_bias(v,ns=mad_std(v)) for v in nmf_signals]).reshape(-1,1)
-        nmf_signals_c = nmf_signals - nmf_biases
+#         #nmf_biases = np.array([find_bias(v) for v in nmf_signals]).reshape(-1,1)
+#         #nmf_biases = np.array([multi_scale_simple_baseline(v) for v in nmf_signals])
+#         if smooth_baseline:
+#             nmf_biases = np.array([simple_baseline(v,50,smooth=50) for v in nmf_signals])
+#         else:
+#             nmf_biases = np.array([find_bias(v,ns=mad_std(v)) for v in nmf_signals]).reshape(-1,1)
+#         nmf_signals_c = nmf_signals - nmf_biases
 
-        nmf_signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in nmf_signals_c])
-        nmf_signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in nmf_signals_c])
-        nmf_signals_filtered = nmf_signals_fplus + nmf_signals_fminus + nmf_biases
+#         nmf_signals_fplus = np.array([v*percentile_label(v,percentile_low=25,tau=1.5) for v in nmf_signals_c])
+#         nmf_signals_fminus = np.array([v*percentile_label(-v,percentile_low=25) for v in nmf_signals_c])
+#         nmf_signals_filtered = nmf_signals_fplus + nmf_signals_fminus + nmf_biases
 
-        rec = nmf_signals_filtered.T@nmf_comps
-        rec_frames = rec.reshape(*patch.shape)
-        rec_frames += find_bias_frames(patch-rec_frames,3,mad_std(patch,0)) # we possibly shift the baseline level due to thresholding of components
+#         rec = nmf_signals_filtered.T@nmf_comps
+#         rec_frames = rec.reshape(*patch.shape)
+#         rec_frames += find_bias_frames(patch-rec_frames,3,mad_std(patch,0)) # we possibly shift the baseline level due to thresholding of components
 
-        #print(out[tsl].shape, patch.shape, rec.shape)
-        out[tsl] += rec_frames + lift
+#         #print(out[tsl].shape, patch.shape, rec.shape)
+#         out[tsl] += rec_frames + lift
         
-        score = 1.0
-        counts[sl] += score
+#         score = 1.0
+#         counts[sl] += score
         
-    for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
-        for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
-            sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
-            if mask[r,c]:
-                _process_loc(r,c)
-    out = out/(1e-12+counts[None,:,:])
-    for r in range(sh[1]):
-        for c in range(sh[2]):
-            if counts[r,c] == 0:
-                out[:,r,c] = 0
-    return out
+#     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
+#         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
+#             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
+#             if mask[r,c]:
+#                 _process_loc(r,c)
+#     out = out/(1e-12+counts[None,:,:])
+#     for r in range(sh[1]):
+#         for c in range(sh[2]):
+#             if counts[r,c] == 0:
+#                 out[:,r,c] = 0
+#     return out
 
 
 

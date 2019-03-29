@@ -83,15 +83,20 @@ def main():
         '--do-oscillations': dict(action='store_true'),
         '--detection-do-adaptive-median-filter': dict(default=0,type=bool,
                                                       help='whether to pre-filter data with an adaptive median filter'),
-        '--detection-low-percentile':dict(default=2.5, type=float,
+        '--detection-low-percentile':dict(default=5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
+        '--detection-spatial_filter':dict(default=3, type=int, help='median smooth size for spatial SVD components'),
         '--detection-tau-smooth':dict(default=2., type=float,
                                       help='smoothing in detection, make larger for less false positives,\
                                       make smaller for detection of smaller events'),
-        '--detection-loc-nhood':dict(default=3,type=int),
+        '--detection-loc-nhood':dict(default=5,type=int),
+        '--detection-loc-stride':dict(default=2,type=int),
+        '--detection-use-clusters':dict(default=False, type=bool),
+        '--detection-temporal-window':dict(default=600,type=int),
         '--detection-smoothed-reconstruction':dict(default=1,type=bool),
+        '--detection-min-components': dict(default=3,type=int,help='minimum number of SVD components to analyse'),
+        '--baseline-smoothness': dict(default=150,type=float),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
-        '--detection-loc-nhood':dict(default=8,type=int),
         '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-peak-threshold':dict(default=0.085, type=float,help='event must contain a peak with at least this ΔF/F value'),
         '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
@@ -200,25 +205,39 @@ def process_record(fs, fname, series, args):
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
         print('calculating baseline fluorescence')
-        benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
+        #benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
+        _, benh = ucats.block_svd_denoise_and_separate(frames, nhood=16, stride=16, min_comps=3,
+                                                       baseline_smoothness=300,spatial_filter=3, with_clusters=False)
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
 
     else:
         print('Denoising frames and separating background via block-SVD in sqrt-ed data')
         #todo: take parameters from arguments to the script
-        print('Going in time-slices')
+        print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/600)-1))
         xt = 2*np.sqrt(frames)
         fdelta, fb = ucats.block_svd_separate_tslices(xt,
-                                                      twindow=600,nhood=8,stride=4, baseline_smoothness=300,
-                                                      spatial_filter=3, 
-                                                      min_comps=3,
+                                                      twindow=args.detection_temporal_window,
+                                                      nhood=args.detection_loc_nhood,
+                                                      stride=args.detection_loc_stride,
+                                                      baseline_smoothness=args.baseline_smoothness,
+                                                      spatial_filter=args.detection_spatial_filter, 
+                                                      min_comps=args.detection_min_components,
+                                                      with_clusters = args.detection_use_clusters,
+                                                      svd_detection_plow = args.detection_low_percentile*2,
                                                       spatial_min_cluster_size=5)
 
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
         th1 = ucats.percentile_th_frames(fdelta,2.0)
+        print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
+        print('Fbase  dynamic range:', fb.min(), fb.max())        
+        print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
         correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt,axis=0))
+        print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
+        #if any(np.isnan(correction_bias)):
+        #    correction_bias = np.zeros(correction_bias.shape)
+        correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
         fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
         frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + correction_bias)    
         #nsdt = ucats.std_median(fdelta,axis=0)
@@ -230,6 +249,8 @@ def process_record(fs, fname, series, args):
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
         frames_dn *= mask_final
         dfof = frames_dn/benh
+        dfof[np.abs(benh)<1e-5] = 0
+        print('Baseline dynamic range:', np.min(benh), np.max(benh))
         #benh =  0.25*fb**2
         #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
         del fb, fdelta,mask_final
@@ -279,6 +300,7 @@ def process_record(fs, fname, series, args):
     p0 = ui.Picker(fseq.FStackColl([fsc]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)
     bgclim = np.percentile(frames_out,(1,99))
+    bgclim[1] *= 1.25
     p0.clims[0] = bgclim
     p.clims[0] = bgclim
     p.clims[1] = (0.025,0.25)
