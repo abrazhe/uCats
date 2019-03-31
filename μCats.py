@@ -442,6 +442,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    baseline_smoothness=100,
                                    svd_detection_plow=25,
                                    cluster_detection_plow=5,
+                                   correct_spatial_components = True,
                                    with_clusters=True,
                                    mask_of_interest=None):
     sh = data.shape
@@ -539,17 +540,18 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rec = np.zeros(w_sh)
         else:
             if not with_clusters:
-                Xdiff = svd_signals_c.T@Wx_b
-                Xdiff_permuted = array([np.random.permutation(v) for v in Xdiff.T]).T
-                signals_permuted = array([np.random.permutation(v) for v in signals_filtered])
+                if correct_spatial_components:
+                    Xdiff = svd_signals_c.T@Wx_b
+                    Xdiff_permuted = array([np.random.permutation(v) for v in Xdiff.T]).T
+                    signals_permuted = array([np.random.permutation(v) for v in signals_filtered])
 
-                Wnew = signals_filtered@(Xdiff)
-                Wnew_perm = signals_permuted@(Xdiff)
-                Wnew_frames = Wnew.reshape(W_images.shape)
-                Wnew_perm_frames = Wnew_perm.reshape(W_images.shape)
-                Wmasks = np.array([threshold_object_size(np.abs(f1) > 3*np.percentile(np.abs(f2),99),5)
-                                   for f1,f2 in zip(Wnew_frames,Wnew_perm_frames)])
-                Wx_b = Wx_b*Wmasks.reshape(Wx_b.shape)
+                    Wnew = signals_filtered@(Xdiff)
+                    Wnew_perm = signals_permuted@(Xdiff)
+                    Wnew_frames = Wnew.reshape(W_images.shape)
+                    Wnew_perm_frames = Wnew_perm.reshape(W_images.shape)
+                    Wmasks = np.array([threshold_object_size(np.abs(f1) > 3*np.percentile(np.abs(f2),99),5)
+                                       for f1,f2 in zip(Wnew_frames,Wnew_perm_frames)])
+                    Wx_b = Wx_b*Wmasks.reshape(Wx_b.shape)
 
                 rec = (signals_filtered.T@Wx_b).reshape(w_sh)
                 

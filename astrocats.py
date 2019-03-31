@@ -207,7 +207,9 @@ def process_record(fs, fname, series, args):
         print('calculating baseline fluorescence')
         #benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
         _, benh = ucats.block_svd_denoise_and_separate(frames, nhood=16, stride=16, min_comps=3,
-                                                       baseline_smoothness=300,spatial_filter=3, with_clusters=False)
+                                                       baseline_smoothness=300,spatial_filter=3,
+                                                       correct_spatial_components=False,
+                                                       with_clusters=False)
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
 
