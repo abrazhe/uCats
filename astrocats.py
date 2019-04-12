@@ -235,7 +235,7 @@ def process_record(fs, fname, series, args):
         print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
         print('Fbase  dynamic range:', fb.min(), fb.max())        
         print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
-        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt,axis=0))
+        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
         print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
         #if any(np.isnan(correction_bias)):
         #    correction_bias = np.zeros(correction_bias.shape)
