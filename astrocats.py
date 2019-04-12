@@ -4,7 +4,7 @@ import os,sys
 import h5py
 
 import argparse
-
+import pickle
 import json
 
 from functools import partial,reduce
@@ -199,17 +199,26 @@ def process_record(fs, fname, series, args):
     # II. Process data
     benh = None
     detected_name = nametag+'-detected.h5'
-    if os.path.exists(detected_name):
-        print('loading existing results of event detection:', detected_name)
+    baseline_name = nametag+'-baseline.pickle'
+    if os.path.exists(detected_name):            
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
-        print('calculating baseline fluorescence')
-        #benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
-        _, benh = ucats.block_svd_denoise_and_separate(frames, nhood=16, stride=16, min_comps=3,
-                                                       baseline_smoothness=300,spatial_filter=3,
-                                                       correct_spatial_components=False,
-                                                       with_clusters=False)
+        print('loading existing results of event detection:', detected_name)
+        if os.path.exists(baseline_name):
+            print('loading existing fluorescence baseline frames')
+            benh = ucats.load_baseline_pickle(baseline_name)
+        else:
+            print('calculating baseline fluorescence')
+            #benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
+            _, benh = ucats.block_svd_denoise_and_separate(frames, nhood=16, stride=16, min_comps=3,
+                                                           baseline_smoothness=args.baseline_smoothness,
+                                                           spatial_filter=3,
+                                                           correct_spatial_components=False,
+                                                           with_clusters=False)
+            print('storing baseline fluorescence estimate')
+            ucats.store_baseline_pickle(baseline_name,benh)
+            
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
 
@@ -228,7 +237,6 @@ def process_record(fs, fname, series, args):
                                                       with_clusters = args.detection_use_clusters,
                                                       svd_detection_plow = args.detection_low_percentile*2,
                                                       spatial_min_cluster_size=5)
-
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
         th1 = ucats.percentile_th_frames(fdelta,2.0)
@@ -241,7 +249,10 @@ def process_record(fs, fname, series, args):
         #    correction_bias = np.zeros(correction_bias.shape)
         correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
         fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
-        frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + correction_bias)    
+        frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
+        print('storing baseline fluorescence estimate')
+        ucats.store_baseline_pickle(baseline_name,benh)
+
         #nsdt = ucats.std_median(fdelta,axis=0)
         mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
         mask1 = fdelta >= th1

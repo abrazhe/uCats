@@ -4,6 +4,7 @@
 
 import os,sys
 from numba import jit
+import pickle
 
 from functools import partial
 import itertools as itt
@@ -45,6 +46,16 @@ from imfun import components
 
 
 _dtype_ = np.float32
+
+
+
+def store_baseline_pickle(name, frames, ncomp=50):
+    pcf = components.pca.PCA_frames(frames,npc=50)
+    pickle.dump(pcf, open(name, 'wb'))
+
+def load_baseline_pickle(name):
+    pcf = pickle.load(open(name, 'rb'))
+    return pcf.inverse_transform(pcf.coords)
 
 
 def make_weighting_kern(size,sigma=1.5):
@@ -570,7 +581,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                 cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
                 #cbiases = array([find_bias(v) for v in cluster_signals])
                 labeler = partial(percentile_label, percentile_low=cluster_detection_plow, tau=2)
-                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v),labeler=labeler ) for v in cluster_signals])
+                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v),labeler=labeler )
+                                           for v in cluster_signals])
                 som_spatial_comps = array([affs==k for k in np.unique(affs)])
                 rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
         
