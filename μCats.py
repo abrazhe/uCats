@@ -2143,12 +2143,13 @@ def map_patches(fn, data,patch_size=10,stride=1,tslice=slice(None),njobs=1):
     return out/counts
 
 from imfun.core import extrema
+from numpy import fft
 def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     """
     Look for local areas with oscillatory dynamics in TXY framestack
     """
     L = len(data)
-    if ndim(data)>2:
+    if np.ndim(data)>2:
         data = data.reshape(L,-1)
     Xc = data.mean(0)
     data = data-Xc
@@ -2162,9 +2163,13 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     peak = 0
     sum_peak = 0
     for i in range(npc):
-        lm = np.array(extrema.locextr(p[:,i],x=nu,refine=True,output='max'))
+        pi = p[:,i]
+        psmooth = smoothed_medianf(pi, 1, 50)
+        pi = pi/psmooth-1
+        lm = np.array(extrema.locextr(pi,x=nu,refine=True,output='max'))
         lm = lm[(lm[:,0]>1/period_low)*(lm[:,0]<1/period_high)]
-        peak_ = np.amax(lm[:,1])/p[:,i][~nu_phys].mean()*s2[i]
+        #peak_ = np.amax(lm[:,1])/psmooth[~nu_phys].mean()*s2[i]
+        peak_ = np.amax(lm[:,1])#*s2[i]
         #print(amax(lm[:,1]),std(p[:,i]),peak_)
         sum_peak += peak_
         peak = max(peak, peak_)
@@ -2361,7 +2366,11 @@ def segment_events(dataset,threshold=0.01):
 
 
 class EventCollection:
-    def __init__(self, frames, threshold=0.025,min_duration=3,min_area=9,peak_threshold=0.05):
+    def __init__(self, frames, threshold=0.025,
+                 dfof_frames = None,
+                 min_duration=3,
+                 min_area=9,
+                 peak_threshold=0.05):
         self.min_duration = min_duration
         self.labels, self.objs = segment_events(frames,threshold)
         self.coll = [dict(duration=self.event_duration(k),
@@ -2376,6 +2385,22 @@ class EventCollection:
                               if c['duration']>min_duration \
                               and c['peak']>peak_threshold\
                               and c['area']>min_area]
+        if dfof is not None:
+            dfofx = ndi.gaussian_filter(dfof_frames, sigma=(1.5,1,1), order=(1,0,0)) # smoothed first derivatives in time
+            nevents = len(self.coll)
+            for (k,event), obj in zip(enumerate(ecoll.coll), ecoll.objs):
+                vmask = self.event_volume_mask(k)
+                areas = [np.sum(m) for m in vmask]
+                area_diff = ndi.gaussian_filter1d(areas, 1.5, order=1)
+                event['mean_area_expansion_rate'] = area_diff[area_diff>0].mean() if any(area_diff>0) else 0
+                event['mean_area_shrink_rate'] = area_diff[area_diff<0].mean() if any(area_diff<0) else 0
+                dx = dfofx[obj]*vmask
+                flatmask = np.sum(vmask,0)>0
+                event['mean_peak_rise'] = (dx.max(axis=0)[flatmask]).mean()
+                event['mean_peak_decay'] = (dx.min(axis=0)[flatmask]).mean()
+                event['max_peak_rise'] = (dx.max(axis=0)[flatmask]).max()
+                event['max_peak_decay'] = (dx.min(axis=0)[flatmask]).min()
+
     def event_duration(self,k):
         o = self.objs[k]
         return o[0].stop-o[0].start

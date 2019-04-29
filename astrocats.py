@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+## TODO: add second pass (correction) as an option
+
 import os,sys
 import h5py
 
