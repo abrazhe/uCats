@@ -2385,10 +2385,10 @@ class EventCollection:
                               if c['duration']>min_duration \
                               and c['peak']>peak_threshold\
                               and c['area']>min_area]
-        if dfof is not None:
+        if dfof_frames is not None:
             dfofx = ndi.gaussian_filter(dfof_frames, sigma=(1.5,1,1), order=(1,0,0)) # smoothed first derivatives in time
             nevents = len(self.coll)
-            for (k,event), obj in zip(enumerate(ecoll.coll), ecoll.objs):
+            for (k,event), obj in zip(enumerate(self.coll), self.objs):
                 vmask = self.event_volume_mask(k)
                 areas = [np.sum(m) for m in vmask]
                 area_diff = ndi.gaussian_filter1d(areas, 1.5, order=1)
