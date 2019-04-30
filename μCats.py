@@ -2164,12 +2164,17 @@ def roticity_fft(data,period_low = 100, period_high=5,npc=6):
     sum_peak = 0
     for i in range(npc):
         pi = p[:,i]
-        psmooth = smoothed_medianf(pi, 1, 50)
-        pi = pi/psmooth-1
-        lm = np.array(extrema.locextr(pi,x=nu,refine=True,output='max'))
+        pbase = smoothed_medianf(pi, 5, 50)
+        psmooth = smoothed_medianf(pi, 1,5)
+        #pi = pi/psmooth-1
+        lm = np.array(extrema.locextr(psmooth,x=nu,refine=True,output='max'))
         lm = lm[(lm[:,0]>1/period_low)*(lm[:,0]<1/period_high)]
         #peak_ = np.amax(lm[:,1])/psmooth[~nu_phys].mean()*s2[i]
-        peak_ = np.amax(lm[:,1])#*s2[i]
+        k = np.argmax(lm[:,1])
+        nuk = lm[k,0]
+        kx = np.argmin(np.abs(nu-nuk))
+        peak_ = lm[k,1]/pbase[kx]*s2[i]
+        #peak_ = np.amax(lm[:,1])#*s2[i]
         #print(amax(lm[:,1]),std(p[:,i]),peak_)
         sum_peak += peak_
         peak = max(peak, peak_)
