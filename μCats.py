@@ -454,7 +454,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    svd_detection_plow=25,
                                    cluster_detection_plow=5,
                                    correct_spatial_components = True,
-                                   with_clusters=True,
+                                   with_clusters=False,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
