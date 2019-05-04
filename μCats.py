@@ -2373,6 +2373,7 @@ def segment_events(dataset,threshold=0.01):
 class EventCollection:
     def __init__(self, frames, threshold=0.025,
                  dfof_frames = None,
+                 gf_sigma = (0.5,2,2),
                  min_duration=3,
                  min_area=9,
                  peak_threshold=0.05):
@@ -2391,7 +2392,7 @@ class EventCollection:
                               and c['peak']>peak_threshold\
                               and c['area']>min_area]
         if dfof_frames is not None:
-            dfofx = ndi.gaussian_filter(dfof_frames, sigma=(1.5,1,1), order=(1,0,0)) # smoothed first derivatives in time
+            dfofx = ndi.gaussian_filter(dfof_frames, sigma=gf_sigma, order=(1,0,0)) # smoothed first derivatives in time
             nevents = len(self.coll)
             for (k,event), obj in zip(enumerate(self.coll), self.objs):
                 vmask = self.event_volume_mask(k)
