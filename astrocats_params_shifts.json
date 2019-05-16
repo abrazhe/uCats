@@ -1,10 +1,9 @@
 {"stab_model": [["shifts", "multi-templates", {}]],
  "morphology_channel": 0,
+ "baseline_smoothness": 300,
  "ca_channel": 1,
- "save_denoised_dfof":0,
- "with_movies": 1,
- "suff":"astrocat003",
+ "with_motion_movies": 1,
+ "suff":"astrocat004",
  "pca_denoise": 1,
- "detection_low_percentile": 1.5,
- "detection_tau_smooth":2.0
+ "ncpu":1
 }

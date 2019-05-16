@@ -77,26 +77,28 @@ def main():
         '--pca-denoise': dict(action='store_true'),
         '--codec': dict(default='libx264', help='movie codec'),
         '--writer': dict(default='ffmpeg', help='movie writer'),
-        '--no-save-enh': dict(action='store_false'),
-        '--save-denoised-dfof': dict(action='store_true'),
+        '--no-save-enh': dict(action='store_true'),
+        #'--save-denoised-dfof': dict(action='store_true'),
         '--no-events': dict(action='store_true'),
         '--skip-existing': dict(action='store_true'),
         '--no-skip-dark-areas':dict(action='store_false'),
-        '--do-oscillations': dict(action='store_true'),
-        '--detection-do-adaptive-median-filter': dict(default=0,type=bool,
+        #'--do-oscillations': dict(action='store_true'),
+        '--detection-do-adaptive-median-filter': dict(action='store_true',
                                                       help='whether to pre-filter data with an adaptive median filter'),
         '--detection-low-percentile':dict(default=5, type=float,
                                           help='lower values detect less FPs, higher values make more detections'),
         '--detection-spatial_filter':dict(default=3, type=int, help='median smooth size for spatial SVD components'),
-        '--detection-tau-smooth':dict(default=2., type=float,
-                                      help='smoothing in detection, make larger for less false positives,\
-                                      make smaller for detection of smaller events'),
+        #'--detection-tau-smooth':dict(default=2., type=float,
+        #                              help='smoothing in detection, make larger for less false positives,\
+        #                              make smaller for detection of smaller events'),
         '--detection-loc-nhood':dict(default=5,type=int),
         '--detection-loc-stride':dict(default=2,type=int),
         '--detection-use-clusters':dict(default=False, type=bool),
         '--detection-temporal-window':dict(default=600,type=int),
         '--detection-smoothed-reconstruction':dict(default=1,type=bool),
         '--detection-min-components': dict(default=3,type=int,help='minimum number of SVD components to analyse'),
+        '--detection-no-variance-stabilization':dict(action='store_true'),
+        '--detection-no-second-pass':dict(action='store_true'),
         '--baseline-smoothness': dict(default=150,type=float),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
@@ -113,6 +115,13 @@ def main():
             parser.add_argument(arg, kw[0], **kw[1])
 
     args = parser.parse_args()
+
+    # some stupid workaround for store_true store_false
+    args.detection_do_second_pass = not args.detection_no_second_pass
+    args.detection_do_variance_stabilization = not args.detection_no_variance_stabilization
+    args.do_save_enh = not args.no_save_enh
+
+    print('Will do second pass?', args.detection_do_second_pass)
 
 
     if args.stab_model is None:
@@ -168,11 +177,11 @@ def process_lif_file(fname, args,min_frames=600):
             gc.collect()
     io_lif.javabridge.kill_vm()
 
-def convert_from_varstab(df,b):
-    "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
-    bc = b**2/4
-    dfc =  (df**2 + 2*df*b)/4
-    return dfc, bc    
+# def convert_from_varstab(df,b):
+#     "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
+#     bc = b**2/4
+#     dfc =  (df**2 + 2*df*b)/4
+#     return dfc, bc
 
 def process_record(fs, fname, series, args):
     nametag = '-'.join((fname,series,args.suff))
@@ -197,12 +206,12 @@ def process_record(fs, fname, series, args):
     else:
         frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
 
-    
+
     # II. Process data
     benh = None
     detected_name = nametag+'-detected.h5'
     baseline_name = nametag+'-baseline.pickle'
-    if os.path.exists(detected_name):            
+    if os.path.exists(detected_name):
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
@@ -220,7 +229,7 @@ def process_record(fs, fname, series, args):
                                                            with_clusters=False)
             print('storing baseline fluorescence estimate')
             ucats.store_baseline_pickle(baseline_name,benh)
-            
+
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
 
@@ -228,22 +237,24 @@ def process_record(fs, fname, series, args):
         print('Denoising frames and separating background via block-SVD in sqrt-ed data')
         #todo: take parameters from arguments to the script
         print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/600)-1))
-        xt = 2*np.sqrt(frames)
-        fdelta, fb = ucats.block_svd_separate_tslices(xt,
-                                                      twindow=args.detection_temporal_window,
-                                                      nhood=args.detection_loc_nhood,
-                                                      stride=args.detection_loc_stride,
-                                                      baseline_smoothness=args.baseline_smoothness,
-                                                      spatial_filter=args.detection_spatial_filter, 
-                                                      min_comps=args.detection_min_components,
-                                                      with_clusters = args.detection_use_clusters,
-                                                      svd_detection_plow = args.detection_low_percentile*2,
-                                                      spatial_min_cluster_size=5)
+        if args.detection_do_variance_stabilization:
+            xt = 2*np.sqrt(frames)
+        else:
+            xt = frames
+        _process_kwargs = dict(nhood=args.detection_loc_nhood,
+                               stride=args.detection_loc_stride,
+                               spatial_filter=args.detection_spatial_filter,
+                               min_comps=args.detection_min_components,
+                               with_clusters = args.detection_use_clusters,
+                               svd_detection_plow = args.detection_low_percentile*2,
+                               spatial_min_cluster_size=5)
+        fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
         th1 = ucats.percentile_th_frames(fdelta,2.0)
         print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
-        print('Fbase  dynamic range:', fb.min(), fb.max())        
+        print('Fbase  dynamic range:', fb.min(), fb.max())
         print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
         correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
         print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
@@ -251,7 +262,10 @@ def process_record(fs, fname, series, args):
         #    correction_bias = np.zeros(correction_bias.shape)
         correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
         fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
-        frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
+        if args.detection_do_variance_stabilization:
+            frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
+        else:
+            frames_n, benh = fdelta, fb
         print('storing baseline fluorescence estimate')
         ucats.store_baseline_pickle(baseline_name,benh)
 
@@ -263,12 +277,50 @@ def process_record(fs, fname, series, args):
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
         frames_dn *= mask_final
-        dfof = frames_dn/benh
-        dfof[np.abs(benh)<1e-5] = 0
+        dfofx = frames_dn/benh
+        dfofx[np.abs(benh)<1e-5] = 0
         print('Baseline dynamic range:', np.min(benh), np.max(benh))
         #benh =  0.25*fb**2
         #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
         del fb, fdelta,mask_final
+
+        coll_ = ucats.EventCollection(dfofx,
+                                      threshold=args.event_segmentation_threshold,
+                                      min_area=args.event_min_area,
+                                      min_duration=args.event_min_duration,
+                                      peak_threshold=args.event_peak_threshold)
+        dfofx = dfofx*(coll_.to_filtered_array()>0)
+
+        if args.detection_do_second_pass:
+            print('Doing second pass...')
+            dfof = (frames/benh).astype(float32)  - 1
+            diff = dfof - dfofx
+            mindiff = min(0, np.min(diff))
+
+            if args.detection_do_variance_stabilization:
+                diff = 2*np.sqrt(diff - mindiff)
+
+            fcorr, b2 = ucats.block_svd_denoise_and_separate(diff, stride=2,nhood=5,baseline_smoothness=150)
+
+            if args.detection_do_variance_stabilization:
+                offset = 2*(-mindiff)**0.5 if mindiff < 0 else 0
+                fcorr,b2 = ucats.convert_from_varstab(fcorr, b2 + offset)
+
+            dfofx2 = dfofx + fcorr
+
+            coll_ = ucats.EventCollection(dfofx2,
+                                          threshold=args.event_segmentation_threshold,
+                                          min_area=args.event_min_area,
+                                          min_duration=args.event_min_duration,
+                                          peak_threshold=args.event_peak_threshold)
+            dfofx2 = dfofx2*(             coll_.to_filtered_array()>0)
+
+            mx = ucats.select_overlapping(dfofx2>=0.025,dfofx[:]>=0.01)
+            dfofx2[~mx] = 0
+            channel_name = 'newrec8a'
+        else:
+            dfofx2 = dfofx
+            channel_name = 'newrec8'
 
         benh = fseq.from_array(benh)
         benh.meta['channel'] = 'Fbaseline'
@@ -286,31 +338,25 @@ def process_record(fs, fname, series, args):
         #plt.tight_layout()
         #f.savefig(nametag+'-colored_mask.png')
         #plt.close(f)
-        fsx = fseq.from_array(dfof)
-        fsx.meta['channel'] = 'newrec8'
-        
-        coll_ = ucats.EventCollection(fsx.data, 
-                                      threshold=args.event_segmentation_threshold,                                     
-                                      min_area=args.event_min_area,
-                                      min_duration=args.event_min_duration,
-                                      peak_threshold=args.event_peak_threshold)
-                                      
-        meta = fsx.meta
-        fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0))
-        fsx.meta = meta
-        del coll_
+        fsx = fseq.from_array(dfofx2)
+        fsx.meta['channel'] = channel_name
+
+        #meta = fsx.meta
+        #fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0))
+        #fsx.meta = meta
+        #   del coll_
         print('--->Done')
-        if args.no_save_enh:
+        if args.do_save_enh:
             fsx.to_hdf5(detected_name)
 
-    
+
     # VI.  Make movies
-    if args.verbose: print('Making movies of detected activity')        
+    if args.verbose: print('Making movies of detected activity')
     #fsout = fseq.FStackColl([fsc,  fsx])
     #frames_out = benh.data*(asarray(fsx.data,float32)+1)
     frames_out = benh.data
     #frames_out = benh.data*(dfof_cleaned + 1)
-    fsout = fseq.FStackColl([benh,  fsx])        
+    fsout = fseq.FStackColl([benh,  fsx])
     p = ui.Picker(fsout); p.start()
     p0 = ui.Picker(fseq.FStackColl([fsc]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)
@@ -325,7 +371,7 @@ def process_record(fs, fname, series, args):
                         codec=args.codec,
                         bitrate=args.bitrate,
                         writer=args.writer)
-    
+
     print('segmenting and animating events')
     events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32))
     if len(events.filtered_coll):
@@ -336,8 +382,8 @@ def process_record(fs, fname, series, args):
     if h5f:
         h5f.close()
     return # from process_record()
-    
-                       
+
+
 
 
 def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
@@ -374,7 +420,7 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
             fsca = fs
 
         mf_raw = fsca.mean_frame()
-            
+
         mf = simple_rescale(mf_raw)
         bright_mask = mf > np.percentile(mf, 50)
         v = array([np.mean(f[bright_mask]) for f in fs])
@@ -423,33 +469,33 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     print('warps name:', warps_name)
     fsm_filtered = None
     newframes = None
-    
-    if os.path.exists(warps_name) and (not args.with_motion_movies):        
+
+    if os.path.exists(warps_name) and (not args.with_motion_movies):
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
         fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
         return fsc, final_warps
-    
-    
+
+
 
     # If reusing previously calculating warps and want to re-make the movie
-    if os.path.exists(warps_name) and (not args.with_motion_movies):        
+    if os.path.exists(warps_name) and (not args.with_motion_movies):
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
         fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
         return fsc, final_warps
-    
+
 
     if args.verbose:
         print('Filtering data')
-        
+
     # Median filter. TODO: make optional via arguments
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
     #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
     fsm_filtered = ucats.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
     # Removing global trend
-    #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]    
+    #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
 
-    
+
     #fsm.frame_filters = []
     #if args.verbose > 1: print('done spatial median filter')
 
@@ -478,8 +524,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     else: pcf = None
 
     fsm_filtered = fsm_filtered.astype(ucats._dtype_)
-    
-    
+
+
     #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
     #fsm_filtered = fseq.from_array(fsm_filtered[:])
     #if args.verbose>1: print('done flattening')
@@ -490,7 +536,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
     else:
         if args.verbose:
-            print('No existing movement correction found, calculating...')            
+            print('No existing movement correction found, calculating...')
         operations = args.stab_model
         warp_history = []
         newframes = fsm_filtered
@@ -517,11 +563,11 @@ def stabilize_motion(fs, args, nametag='',suff=None):
             elif stab_type in ['multi', 'multi-templates', 'pca-templates']:
                 templates, affs = fseq.frame_exemplars_pca_som(newframes,npc=len(fsm)//100+5)
                 warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],
-                                              njobs=args.ncpu,                                              
+                                              njobs=args.ncpu,
                                               **model_params)
             warp_history.append(warps)
             newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu).astype(ucats._dtype_)
-            mx_warps = ucats.max_shifts(warps, args.verbose)            
+            mx_warps = ucats.max_shifts(warps, args.verbose)
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
@@ -539,15 +585,15 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     if isinstance(fs, fseq.FStackColl) and len(fs.stacks)>1:
         stacks = [fs.stacks[morphology_channel], fs.stacks[args.ca_channel]]
         stacks_c = [fsc.stacks[morphology_channel], fsc.stacks[args.ca_channel]]
-        
+
         fs_show = fseq.FStackColl(stacks)
         fsc_show = fseq.FStackColl(stacks_c)
-        
+
     else:
         fs_show = fs
         fsc_show = fsc
-        
-        
+
+
     if args.with_motion_movies:
         p1 = ui.Picker(fs_show)
         p2 = ui.Picker(fsc_show)
@@ -555,7 +601,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         p1.clims = clims
         p2.clims = clims
         pickers_list = [p1,p2]
-        
+
         if (isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1) or (fsm_filtered is not None):
             if fsm_filtered is None:
                 p3 = ui.Picker(fs.stacks[morphology_channel])
@@ -573,7 +619,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
 
         ui.pickers_to_movie(pickers_list, nametag+'-a-stabilization-%s.mp4'%suff,
                             codec=args.codec, writer=args.writer,titles=('raw', 'stabilized'))
-    
+
     return fsc, final_warps # from stabilize_motion
 
 
@@ -611,15 +657,15 @@ def animate_events(frames, ev_coll, args,
                    movie_name='test.mp4',
                    min_event_show_size=50):
     pl,ph = percentile(frames, (1,99))
-    
+
     header_add = 0.4
     figsize=(4.5,4.5+header_add)
     f,ax = plt.subplots(1,1,figsize=figsize)
-    
+
     L =len(frames)
     titlestr = 'f: %03d'
-    
-    
+
+
     out = np.zeros(frames.shape+(4,),dtype=float32)#+avg.reshape((1,)+avg.shape).astype(float32)
     for d in ev_coll.filtered_coll:
         k = d['idx']
@@ -633,24 +679,24 @@ def animate_events(frames, ev_coll, args,
             out[o][cond] = np.asarray(color)
 
     #np.save(movie_name+'-colored.npy',out)
-            
+
     #out = ma.masked_less_equal(out,0)
-    
-    
+
+
     hb = ax.imshow(frames[0],clim=(pl,ph),cmap='gray',interpolation='nearest')
     hf = ax.imshow(out[0])
     ts  = ax.set_title(titlestr%(0),size='small')
     #sb = Rectangle((10,fsg[0].shape[1]-10), scalebar/dx, 3, color='g',ec='none')
-    #ax.add_patch(sb)    
+    #ax.add_patch(sb)
     plt.setp(ax, frame_on=False, xticks=[],yticks=[])
     plt.tight_layout()
-    
+
     def _animate(fk):
         hb.set_data(frames[fk])
         hf.set_data(out[fk])
         ts.set_text(titlestr%(fk))
         return [hb,hf]
-    
+
     anim = animation.FuncAnimation(f, _animate, frames=int(L), blit=True)
     Writer = animation.writers.avail[args.writer]
     w = Writer(fps=args.fps,codec=args.codec,bitrate=args.bitrate)
@@ -662,7 +708,7 @@ def make_mask(dfof, nsd0):
     mask_simple1 = (dfof1 > th)*(dfof1>0.05)
     mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
     mask_simple1 = np.array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
-    
+
     mask_simple2 = (dfof>nsd0)
     mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
     mask_simple2 = np.array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
