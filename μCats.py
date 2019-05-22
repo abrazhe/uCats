@@ -37,7 +37,7 @@ from imfun.filt.dctsplines import rolling_sd_scipy_nd
 from imfun import bwmorph
 
 from imfun import cluster
-from imfun.filt.dctsplines import l2spline 
+from imfun.filt.dctsplines import l2spline
 from imfun.core.coords import make_grid
 from imfun.core import fnutils
 from imfun.multiscale import mvm
@@ -87,7 +87,7 @@ def avg_filter_greater(m, th=0):
     return out
 
 def signals_from_array_avg(data, stride=2, patch_size=5):
-    """Convert a TXY image stack to a list of temporal signals (taken from small spatial windows/patches)"""  
+    """Convert a TXY image stack to a list of temporal signals (taken from small spatial windows/patches)"""
     d = np.array(data).astype(_dtype_)
     acc = []
     squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
@@ -95,7 +95,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     w = w/w.sum()
     #print('w.shape:', w.shape)
     #print(np.argmax(w.reshape(1,-1)))
-    
+
     tslice = (slice(None),)
     for sq in squares:
         patch = d[tslice+sq]
@@ -114,7 +114,7 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
 def clip_outliers(m, plow=0.5, phigh=99.5):
     px = np.percentile(m, (plow, phigh))
     return np.clip(m, *px)
-    
+
 def weight_counts(collection,sh):
     counts = np.zeros(sh)
     for v,s,w in collection:
@@ -177,7 +177,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
             th = dists[np.argsort(dists)[min(len(dists), cluster_minsize*2)]]
             similar = dists <= max(th, max_same)
             #print('knn similar:', np.sum(similar), 'total signals:', len(similar))
-            #dists *= 2  # shrink weights if not from cluster                    
+            #dists *= 2  # shrink weights if not from cluster
         else:
             cluster_count[0] +=1
 
@@ -195,13 +195,13 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
                                     # TODO: project to PCs?
         acc.append((vx, sl, weights))
         return #  _process_loc
-        
+
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\r processing location %05d/%d '%(r*sh[1] + c+1, np.prod(sh[1:])))
             if mask[r,c]:
                 _process_loc(r,c)
-                
+
     sys.stderr.write('\n')
     print('KNN:', knn_count[0])
     print('cluster:',cluster_count[0])
@@ -224,7 +224,7 @@ def signals_from_array_pca_cluster(data,stride=2, nhood=3, ncomp=2,
                 hole_i += 1
     #print('acc len after:', len(acc))
     #print('DBSCAN eps:', np.mean(dbscan_eps_acc), np.std(dbscan_eps_acc))
-    return acc 
+    return acc
 
 
 from scipy import stats
@@ -261,8 +261,8 @@ def signals_from_array_correlation(data,stride=2,nhood=5,
         weights += 1e-6 # add small weight to avoid dividing by zero
         vx = (patch*weights.reshape(-1,1)).sum(0)
         acc.append((vx, sl, weights))
-        
-        
+
+
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -273,7 +273,7 @@ def signals_from_array_correlation(data,stride=2,nhood=5,
     for r in range(nhood,sh[1]-nhood):
         for c in range(nhood,sh[2]-nhood):
             if mask[r,c] and not counts[r,c]:
-                sys.stderr.write('\r (2x) processing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))                
+                sys.stderr.write('\r (2x) processing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
                 _process_loc(r,c)
     return acc
 
@@ -301,7 +301,7 @@ from imfun import components
 #         proj = ux@np.diag(s[:npc])@vh[:npc]
 #         out[tsl] += (proj+Xc).T.reshape(w_sh)
 #         counts[sl] += 1
-        
+
 #     for r in range(nhood,sh[1]-nhood,stride):
 #         for c in range(nhood,sh[2]-nhood,stride):
 #             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -321,7 +321,7 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
@@ -352,8 +352,8 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         vhx_threshs = [mad_std(f) for f in vh_images]
         vhx = np.array([np.where(np.abs(f-fx) > th,fx,f) for f,fx,th in zip(vh_images,vhx,vhx_threshs)])
         vhx = vhx.reshape(rank,len(vh[0]))
-            
-        
+
+
         #print('\n', patch.shape, u.shape, vh.shape)
         #ux = u[:,:rank]
         proj = ux@np.diag(s[:rank])@vhx[:rank]
@@ -362,10 +362,10 @@ def patch_pca_denoise2(data,stride=2, nhood=5, npc=None,
         rec  = proj.reshape(w_sh)
         #if keep_baseline:
         #    # we possibly shift the baseline level due to thresholding of components
-        #    rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0)) 
+        #    rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
         out[tsl] += score*rec
         counts[sl] += score
-        
+
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d '%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -390,7 +390,7 @@ def convert_from_varstab(df,b):
     "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
     bc = b**2/4
     dfc =  (df**2 + 2*df*b)/4
-    return dfc, bc    
+    return dfc, bc
 
 
 def top_average_frames(frames,percentile=85):
@@ -449,16 +449,18 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                                    max_comps = None,
                                    spatial_filter=1,
                                    spatial_filter_th=5,
+                                   temporal_filter = 0,
                                    spatial_min_cluster_size=7,
                                    baseline_smoothness=100,
                                    svd_detection_plow=25,
                                    cluster_detection_plow=5,
                                    correct_spatial_components = True,
                                    with_clusters=False,
+                                   only_truncated_svd = False,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out_signals = np.zeros(sh,_dtype_)
@@ -475,8 +477,9 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         max_comps = (nhood**2)/2
 
     patch_size=nhood*2
-    wk = make_weighting_kern(patch_size,2.5)        
-    
+    wk = make_weighting_kern(patch_size,2.5)
+
+    # TODO: вынести во внешний namespace?
     def _process_loc(r,c,mask):
         sl = (slice(r-nhood,r+nhood), slice(c-nhood,c+nhood)) # don't need center here
         if not np.any(mask[sl]):
@@ -505,87 +508,102 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
-            
+
         #score = np.sum(s[:rank]**2)/np.sum(s**2)
-        score = 1 
-            
+        score = 1
+
         ux = u[:,:rank]
         vh = vh[:rank]
         s = s[:rank]
 
         W = np.diag(s)@vh
-        
+
         if spatial_filter >= 1:
             W_images = W.reshape(-1,*psh)
             Wx_b = np.array([smoothed_medianf(f,spatial_filter/5, spatial_filter) for f in W_images])
             Wx_b = Wx_b.reshape(rank,len(vh[0]))
         else:
             Wx_b = W
-            
-        svd_signals = ux.T
-        if baseline_smoothness:
-            biases = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
-            #biases = np.array([smoothed_medianf(v, smooth=5, wmedian=int(baseline_smoothness)) for v in svd_signals])
-        else:
-            biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
-            biases = np.zeros_like(svd_signals)+biases
 
-        svd_signals_c = svd_signals - biases
-                
-        labeler = partial(percentile_label, percentile_low=svd_detection_plow, tau=2)
-        signals_fplus = np.array([v*labeler(v) for v in svd_signals_c])
-        signals_fminus = np.array([v*labeler(-v) for v in svd_signals_c])
-        signals_filtered = signals_fplus + signals_fminus
-        event_tmask = np.sum(np.abs(signals_filtered)>0,0) > 0
-        active_comps = np.sum(np.abs(signals_filtered)>0,1)>3 # %active component for clustering is such that was active at least for k frames 
-        #ux_signals = signals_filtered.T
-        #ux_biases = biases.T
-        nactive = np.sum(active_comps)
-        sys.stderr.write(' active components: %02d                   '%nactive)
-
-        baselines = biases.T@Wx_b#@vhx[:rank]
-        rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
-        
-        
-        if not np.any(active_comps):
+        if only_truncated_svd:
+            sys.stderr.write('__ doing only truncated svd                 ')
+            baselines = ux@Wx_b#@vhx[:rank]
+            rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
             rec = np.zeros(w_sh)
         else:
-            if not with_clusters:
-                if correct_spatial_components:
-                    Xdiff = svd_signals_c.T@Wx_b
-                    Xdiff_permuted = array([np.random.permutation(v) for v in Xdiff.T]).T
-                    signals_permuted = array([np.random.permutation(v) for v in signals_filtered])
-
-                    Wnew = signals_filtered@(Xdiff)
-                    Wnew_perm = signals_permuted@(Xdiff)
-                    Wnew_frames = Wnew.reshape(W_images.shape)
-                    Wnew_perm_frames = Wnew_perm.reshape(W_images.shape)
-                    Wmasks = np.array([threshold_object_size(np.abs(f1) > 3*np.percentile(np.abs(f2),99),5)
-                                       for f1,f2 in zip(Wnew_frames,Wnew_perm_frames)])
-                    Wx_b = Wx_b*Wmasks.reshape(Wx_b.shape)
-
-                rec = (signals_filtered.T@Wx_b).reshape(w_sh)
-                
+            svd_signals = ux.T
+            if baseline_smoothness:
+                biases = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in svd_signals])
+                #biases = np.array([smoothed_medianf(v, smooth=5, wmedian=int(baseline_smoothness)) for v in svd_signals])
             else:
-                #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
-                Wactive = Wx_b[active_comps]
-                nclusters = nactive*4 # todo: make a parameter to choose.
-                cx = skclust.AgglomerativeClustering(nclusters,affinity='l1',linkage='average')
-                affs = cx.fit_predict(Wactive.T)
-                affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=5)
-                affs = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
-                affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=2)
+                biases = np.array([find_bias(v,ns=mad_std(v)) for v in svd_signals]).reshape(-1,1)
+                biases = np.zeros_like(svd_signals)+biases
 
-                approx_c = svd_signals_c.T@Wx_b
-                #approx_c = svd_signals_c[active_comps].T@Wactive
-                cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
-                #cbiases = array([find_bias(v) for v in cluster_signals])
-                labeler = partial(percentile_label, percentile_low=cluster_detection_plow, tau=2)
-                csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v),labeler=labeler )
-                                           for v in cluster_signals])
-                som_spatial_comps = array([affs==k for k in np.unique(affs)])
-                rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
-        
+            svd_signals_c = svd_signals - biases
+
+            # NOTE: this kind of labeler may omit some events
+            #       if there are both up- and down- deflections in the signal
+            labeler = partial(percentile_label, percentile_low=svd_detection_plow, tau=2)
+            if temporal_filter > 1:
+                tsmoother = partial(smoothed_medianf,  smooth=1., wmedian=3)
+            else:
+                tsmoother = lambda v_: v_
+
+            signals_fplus = np.array([tsmoother(v)*labeler(v) for v in svd_signals_c])
+            signals_fminus = np.array([tsmoother(v)*labeler(-v) for v in svd_signals_c])
+
+            signals_filtered = signals_fplus + signals_fminus
+            event_tmask = np.sum(np.abs(signals_filtered)>0,0) > 0
+            active_comps = np.sum(np.abs(signals_filtered)>0,1)>3 # %active component for clustering is such that was active at least for k frames
+            #ux_signals = signals_filtered.T
+            #ux_biases = biases.T
+            nactive = np.sum(active_comps)
+            sys.stderr.write(' active components: %02d                   '%nactive)
+
+            baselines = biases.T@Wx_b#@vhx[:rank]
+            rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
+
+
+            if not np.any(active_comps):
+                rec = np.zeros(w_sh)
+            else:
+                if not with_clusters:
+                    if correct_spatial_components:
+                        Xdiff = svd_signals_c.T@Wx_b
+                        Xdiff_permuted = array([np.random.permutation(v) for v in Xdiff.T]).T
+                        signals_permuted = array([np.random.permutation(v) for v in signals_filtered])
+
+                        Wnew = signals_filtered@(Xdiff)
+                        Wnew_perm = signals_permuted@(Xdiff)
+                        Wnew_frames = Wnew.reshape(W_images.shape)
+                        Wnew_perm_frames = Wnew_perm.reshape(W_images.shape)
+                        # below some parameters need formalization and tuning for optimal results on in vivo vs in situ dataккк
+                        Wmasks = np.array([threshold_object_size(np.abs(f1) > 3*np.percentile(np.abs(f2),99),5)
+                                           for f1,f2 in zip(Wnew_frames,Wnew_perm_frames)])
+                        Wx_b = Wx_b*Wmasks.reshape(Wx_b.shape)
+
+                    rec = (signals_filtered.T@Wx_b).reshape(w_sh)
+
+                else:
+                    #affs = cluster.som(Wx_b.T,(rank*2,1),min_reassign=1)
+                    Wactive = Wx_b[active_comps]
+                    nclusters = nactive*4 # todo: make a parameter to choose.
+                    cx = skclust.AgglomerativeClustering(nclusters,affinity='l1',linkage='average')
+                    affs = cx.fit_predict(Wactive.T)
+                    affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=5)
+                    affs = cleanup_cluster_map(affs.reshape(psh),niter=10).ravel()
+                    affs = correct_small_loads(Wactive.T,affs,min_loads=5,niter=2)
+
+                    approx_c = svd_signals_c.T@Wx_b
+                    #approx_c = svd_signals_c[active_comps].T@Wactive
+                    cluster_signals = array([approx_c.T[affs==k].mean(0) for k in np.unique(affs)])
+                    #cbiases = array([find_bias(v) for v in cluster_signals])
+                    labeler = partial(percentile_label, percentile_low=cluster_detection_plow, tau=2)
+                    csignals_filtered = array([simple_pipeline_(v, noise_sigma=mad_std(v),labeler=labeler )
+                                               for v in cluster_signals])
+                    som_spatial_comps = array([affs==k for k in np.unique(affs)])
+                    rec = (csignals_filtered.T@som_spatial_comps).reshape(-1,*psh)
+
         out_baselines[tsl] += score*rec_baselines
         counts_b[sl] += score
 
@@ -593,7 +611,8 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
         ##rec += find_bias_frames(data[tsl]-rec,3,mad_std(data[tsl],0))
         out_signals[tsl] += score*rec
         counts[sl] += score#*(np.sum(rec,0)>0)
-        
+        return
+
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -608,7 +627,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             if counts_b[r,c] == 0:
                 out_baselines[:,r,c] = 0
     deltas = data-out_signals-out_baselines
-    #correction_bias = find_bias_frames(deltas, 3, mad_std(deltas,0)) 
+    #correction_bias = find_bias_frames(deltas, 3, mad_std(deltas,0))
     return out_signals, out_baselines#+correction_bias
 
 
@@ -629,7 +648,7 @@ def mask2points(mask):
     points = []
     for loc in locations(mask.shape):
         if mask[loc]:
-            points.append(loc) 
+            points.append(loc)
     return points
 
 from imfun import cluster
@@ -663,7 +682,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
                                    mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
@@ -681,12 +700,12 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
 
     def _shift_signal_i(v, shift):
         return v[((tv+shift)%L).astype(np.int)]
-    
+
     def _process_loc(r,c):
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
         tsl = (slice(None),)+sl
 
-        
+
         patch = data[tsl]
         w_sh = patch.shape
         psh = w_sh[1:]
@@ -703,7 +722,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
         #shifts = [register_translation(v,vcenter)[0][0] for v in signals]
         shifts = np.array([_register_shift_1d(vcenter_ft,v) for v in signals_ft])
         shifts = shifts*(np.abs(shifts) < max_shift)
-        
+
         vecs_shifted = np.array([_shift_signal_i(v, p)  for v,p in zip(signals, shifts)])
         #vecs_shifted = np.array([v[((tv+p)%L).astype(int)] for v,p in zip(signals, shifts)])
         corrs_shifted = np.corrcoef(vecs_shifted)[kcenter]
@@ -720,7 +739,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
         recs = ux0@np.diag(s0[:rank])@vhx0
         #score = np.sum(s0[:rank]**2)/np.sum(s0**2)*np.ones(len(signals))
         score = 1
-        
+
         if np.sum(coherent_mask) > 2*rank:
             u,s,vh = np.linalg.svd(vecs_shifted[coherent_mask],False)
             vhx = ndi.median_filter(vh[:rank],size=(1,temporal_filter)) if temporal_filter > 1 else vh[:rank]
@@ -729,7 +748,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
             score_coh = np.sum(s[:rank]**2)/np.sum(s**2)
             recs = np.where(coherent_mask[:,None], recs_coh, recs)
             score[coherent_mask] = score_coh
-            
+
         recs_unshifted = np.array([_shift_signal_i(v,-p) for v,p in zip(recs,shifts)])
         proj = recs_unshifted.T
 
@@ -737,7 +756,7 @@ def _patch_pca_denoise_with_shifts(data,stride=2, nhood=5, npc=None,
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
         counts[sl] += score
-        
+
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -757,7 +776,7 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
                        mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
@@ -795,10 +814,10 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
 
         #print(out[tsl].shape, patch.shape, rec.shape)
         out[tsl] += rec.reshape(*patch.shape)
-        
+
         score = 1.0
         counts[sl] += score
-        
+
     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -845,7 +864,7 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
 #         lift = patch.min(0)
 
 #         patch = patch-lift # precotion against negative values in data
-        
+
 #         X = patch.reshape(L,-1)
 #         u,s,vh = svd(X,False)
 #         rank = min(np.min(X.shape), min(max_ncomp, min_ncomp(s,X.shape) + 1)) if ncomp is None else ncomp
@@ -875,10 +894,10 @@ def _patch_denoise_dmd(data,stride=2, nhood=5, npc=None,
 
 #         #print(out[tsl].shape, patch.shape, rec.shape)
 #         out[tsl] += rec_frames + lift
-        
+
 #         score = 1.0
 #         counts[sl] += score
-        
+
 #     for r in itt.chain(range(nhood,sh[1]-nhood,stride), [sh[1]-nhood]):
 #         for c in itt.chain(range(nhood,sh[2]-nhood,stride), [sh[2]-nhood]):
 #             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -905,7 +924,7 @@ def dmdf_new(X,Y=None, r=None,sort_explained=False):
     V = Vh[:r].conj().T
     Uh = U[:,:r].conj().T
     B = Y@V@(np.diag(1/sv))
-    
+
     Atilde = Uh@B
     lam, W = np.linalg.eig(Atilde)
     Phi = B@W
@@ -984,9 +1003,9 @@ def to_zscore_frames(frames):
 
 def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
                                    verbose=True):
-    
+
     mf_frames50 = ndi.percentile_filter(frames,50, (1,nw,nw))    # spatial median filter
-    #mf_frames85 = ndi.percentile_filter(frames,85, (1,nw,nw))    # spatial top 85% filter   
+    #mf_frames85 = ndi.percentile_filter(frames,85, (1,nw,nw))    # spatial top 85% filter
     mf_frames = mf_frames50#*mf_frames85
     del mf_frames50#,mf_frames85
 
@@ -996,7 +1015,7 @@ def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
     mf_frames = to_zscore_frames(mf_frames)
     mf_frames = np.clip(mf_frames, *np.percentile(mf_frames, (0.5,99.5)))
     #return mf_frames
-    
+
     th = percentile_th_frames(mf_frames,plow)
     mask = (mf_frames > th)*(ndi.gaussian_filter(mf_frames, (smooth,0.5,0.5))>th)
     mask = ndi.binary_dilation(opening_of_closing(mask))
@@ -1005,17 +1024,17 @@ def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
     if verbose:
         print('Done mask from spatial filters')
     return mask
-    
+
     #ns = mad_std(frames, axis=0)
     #frames_smooth = ndi.gaussian_filter(ndi.median_filter(frames, (5, 1,1)), (1.,0,0))
     #mask_a = frames_smooth > th*ns
     #
     #if verbose:
     #    print('Done mask from temporal filters')
-    #    
+    #
     #mask_seeds = (mask_a + ndi.median_filter(mask_a, (1,3,3))>0)*mask
     #mask_seeds = np.array([threshold_object_size(m, 9) for m in mask_seeds])
-    # 
+    #
     #mask_final = mask_seeds
     #if verbose:
     #    print('Merged masks')
@@ -1029,7 +1048,7 @@ def _patch_denoise_percentiles(data,stride=2, nhood=3, mw=5,
                                mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
@@ -1049,7 +1068,7 @@ def _patch_denoise_percentiles(data,stride=2, nhood=3, mw=5,
         sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
         tsl = (slice(None),)+sl
 
-        
+
         patch = data[tsl]
         w_sh = patch.shape
         signals = patch.reshape(sh[0],-1).T
@@ -1080,14 +1099,14 @@ def _patch_denoise_percentiles(data,stride=2, nhood=3, mw=5,
         #pf_txy = (pf*vma_mask).
         rec = np.array([avg_filter_greater(m,0) for m in pf_txy])
         #rec = pf_txy
-        
-        
+
+
         #rec = pf*vma*(pf>th*nsv)
         #score = score.reshape(w_sh[1:])
         score = 1.0
         out[tsl] += score*rec
         counts[sl] += score
-        
+
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -1116,7 +1135,7 @@ def omega_approx(beta):
 
 def svht(sv, sh):
     m,n = sh
-    if m>n: 
+    if m>n:
         m,n=n,m
     omg = omega_approx(m/n)
     return omg*np.median(sv)
@@ -1131,7 +1150,7 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
                                     mask_of_interest=None):
     sh = data.shape
     L = sh[0]
-    
+
     #if mask_of_interest is None:
     #    mask_of_interest = np.ones(sh[1:],dtype=np.bool)
     out = np.zeros(sh,_dtype_)
@@ -1146,7 +1165,7 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
         tsl = (slice(None),)+sl
 
         kcenter = 2*nhood*(nhood+1)
-        
+
         patch = data[tsl]
         w_sh = patch.shape
         patch = patch.reshape(sh[0],-1)
@@ -1163,7 +1182,7 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
 
         paths_interp_smooth = [np.clip(l2spline(ip,5).astype(int),0,L-1) for ip in paths_interp]
         paths_interp_dual_smooth = [np.clip(l2spline(ip,5).astype(int),0,L-1) for ip in paths_interp_dual]
-        
+
         aligned = np.array([v[ip] for v,ip in zip(signals, paths_interp_smooth)])
 
         u,s,vh = np.linalg.svd(aligned.T,False)
@@ -1176,7 +1195,7 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
         #points = vh[:npc].T
         #all_dists = cluster.dbscan_._pairwise_euclidean_distances(points)
         #dists = all_dists[kcenter]
-        
+
         vh_images = vh[:npc].reshape(-1,*w_sh[1:])
         vhx = [ndimage.median_filter(f, size=(spatial_filter,spatial_filter)) for f in vh_images]
         vhx_threshs = [mad_std(f) for f in vh_images]
@@ -1188,11 +1207,11 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
         score = np.sum(s[:npc]**2)/np.sum(s**2)
 
         proj = np.array([v[ip] for v,ip in zip(proj_w.T,paths_interp_dual_smooth)]).T
-        
+
         #score = 1
         out[tsl] += score*proj.reshape(w_sh)
         counts[sl] += score
-        
+
     for r in range(nhood,sh[1]-nhood,stride):
         for c in range(nhood,sh[2]-nhood,stride):
             sys.stderr.write('\rprocessing location (%03d,%03d), %05d/%d'%(r,c, r*sh[1] + c+1, np.prod(sh[1:])))
@@ -1236,9 +1255,9 @@ def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of
                 out[(slice(None),)+sl] += xs[np.argsort(ks)].T.reshape(w_sh)*wx[None,:,:]
                 counts[sl] += wx
     out /= counts
-    
+
     return out
-    
+
 
 def loc_in_patch(loc,patch):
     sl = patch[1]
@@ -1270,7 +1289,7 @@ def loc_in_patch(loc,patch):
 #                 sl = (slice(r-nhood,r+nhood+1), slice(c-nhood,c+nhood+1))
 #                 patch = data[(slice(None),)+sl]
 #                 pshape = patch.shape
-#                 patch = patch.reshape(sh[0],-1).T               
+#                 patch = patch.reshape(sh[0],-1).T
 #                 Xc = patch.mean(0)
 #                 u,s,vh = np.linalg.svd(patch-Xc,full_matrices=False)
 #                 points = u[:,:ncomp]
@@ -1279,7 +1298,7 @@ def loc_in_patch(loc,patch):
 #                 signals = (pc_signals.T@np.diag(s[:ncomp])@vh[:ncomp] + Xc).T
 #                 out_data[empty_slice+sl] += signals.reshape(pshape)
 #                 counts[sl] += np.ones(pshape[1:],dtype=int)
-            
+
 #     out_data /= (1e-12 + counts)
 #     return out_data
 
@@ -1346,16 +1365,16 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
         details = v-ndi.median_filter(v,20)
     else:
         details = v
-    if hw is None: hw = int(len(details)/10.)    
+    if hw is None: hw = int(len(details)/10.)
     padded = np.pad(details,2*hw,mode='reflect')
     tv = np.arange(len(details))
-    
+
     s = pd.Series(padded)
     rkw = dict(window=2*hw,center=True)
 
     out = (s - s.rolling(**rkw).median()).abs().rolling(**rkw).median()
     out = 1.4826*np.array(out)[2*hw:-2*hw]
-    
+
     if with_plots:
         f,ax = plt.subplots(1,1,sharex=True)
         ax.plot(tv,details,'gray')
@@ -1371,7 +1390,7 @@ def rolling_sd_pd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=Tru
 
 def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
     """
-    Estimate time-varying baseline in 1D signal by first finding fast significant 
+    Estimate time-varying baseline in 1D signal by first finding fast significant
     changes and removing them, followed by smoothing
     """
     rec = process_tmvm(y,k=3,rec_variant=1)
@@ -1393,7 +1412,7 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
 
 
 def smoothed_medianf(v,smooth=10,wmedian=10):
-    "Robust smoothing by first applying median filter and then applying L2-spline filter" 
+    "Robust smoothing by first applying median filter and then applying L2-spline filter"
     return l2spline(ndi.median_filter(v, wmedian),smooth)
 
 def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
@@ -1401,7 +1420,7 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
-    b2 = b + np.median(d[np.abs(d)<=th*ns]) # correct scalar shift 
+    b2 = b + np.median(d[np.abs(d)<=th*ns]) # correct scalar shift
     return b2
 
 
@@ -1450,7 +1469,7 @@ def local_jitter(v, sigma=5):
         vx[i] = v[j]
         vx[j] = v[i]
     return vx
-    
+
 
 def std_median(v,axis=None):
     if axis is None:
@@ -1480,13 +1499,13 @@ def adaptive_median_filter(frames,th=5, tsmooth=1,ssmooth=5, keep_clusters=False
     details = frames - smoothed_frames
     sdmap = mad_std(frames,axis=0)
     outliers = np.abs(details) > th*sdmap
-    #s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)    
+    #s = np.array([[[0,0,0],[0,1,0],[0,0,0]]]*3)
     if keep_clusters:
         clusters = threshold_object_size(outliers,min_cluster_size)
         outliers = ~clusters if reverse else outliers^clusters
     else:
         if reverse:
-            outliers = ~outliers    
+            outliers = ~outliers
     return np.where(outliers, smoothed_frames, frames)
 
 
@@ -1516,7 +1535,7 @@ def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clus
         if reverse:
             outliers = ~outliers
     return np.where(outliers, imgf, img)
-    
+
 
 # def adaptive_median_filter_frames(frames,th=5, tsmooth=5,ssmooth=1):
 #     medfilt = ndi.median_filter(frames, [tsmooth,ssmooth,ssmooth])
@@ -1530,7 +1549,7 @@ def rolling_sd(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=True,i
         details = v-ndi.median_filter(v,20)
     else:
         details = v
-    if hw is None: hw = int(len(details)/10.)    
+    if hw is None: hw = int(len(details)/10.)
     padded = np.pad(details,hw,mode='reflect')
     tv = np.arange(len(details))
     out = np.zeros(len(details))
@@ -1554,13 +1573,14 @@ def rolling_sd_scipy(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=
         details = v-ndi.median_filter(v,20)
     else:
         details = v
-    if hw is None: hw = int(len(details)/10.)    
+    if hw is None: hw = int(len(details)/10.)
     padded = np.pad(details,hw,mode='reflect')
     tv = np.arange(len(details))
     #out = np.zeros(len(details))
-    
-    rolling_median = lambda x: ndi.median_filter(x, 2*hw)
-    
+
+    #rolling_median = lambda x: ndi.median_filter(x, 2*hw)
+    rolling_median = partial(ndi.median_filter, size=2*hw)
+
     out = 1.4826*rolling_median(np.abs(padded-rolling_median(padded)))[hw:-hw]
 
     if with_plots:
@@ -1589,19 +1609,20 @@ def baseline_als_spl(y, k=0.5, tau=11, smooth=25., p=0.001, niter=100,eps=1e-4,
     #npad=int(smooth)
     nsmooth = np.int(np.ceil(smooth))
     npad =nsmooth
-    
+
     y = np.pad(y,npad,"reflect")
     L = len(y)
     w = np.ones(L)
-    
+
     if rsd is None:
         if rsd_smoother is None:
             #rsd_smoother = lambda v_: l2spline(v_, 5)
-            rsd_smoother = lambda v_: ndi.median_filter(y,7)
+            #rsd_smoother = lambda v_: ndi.median_filter(y,7)
+            rsd_smoother = partial(ndi.median_filter, size=7)
         rsd = rolling_sd_pd(y-rsd_smoother(y), input_is_details=True)
     else:
         rsd = np.pad(rsd, npad,"reflect")
-    
+
     #ys = l1spline(y,tau)
     ntau = np.int(np.ceil(tau))
     ys = ndi.median_filter(y,ntau)
@@ -1614,7 +1635,7 @@ def baseline_als_spl(y, k=0.5, tau=11, smooth=25., p=0.001, niter=100,eps=1e-4,
         clip_asymm = y-z > k*rsd
         clip_asymm2 = y-z <= -k*rsd
         r = asymm_ratio#*core.rescale(1./(1e-6+rsd))
-        
+
         #w = p*clip_asymm + (1-p)*(1-r)*(~clip_symm) + (1-p)*r*(clip_asymm2)
         w = p*(1-r)*clip_asymm + (1-p)*(~clip_symm) + p*r*(clip_asymm2)
         w[:npad] = (1-p)
@@ -1634,14 +1655,15 @@ def double_scale_baseline(y,smooth1=15.,smooth2=25.,rsd=None,**kwargs):
     Baseline estimation in 1D signals by asymmetric smoothing and using two different time scales
     """
     if rsd is None:
-        rsd_smoother = lambda v_: ndi.median_filter(y,7)
+        #rsd_smoother = lambda v_: ndi.median_filter(y,7)
+        rsd_smoother = partial(ndi.median_filter, size=7)
         rsd = rolling_sd_pd(y-rsd_smoother(y), input_is_details=True)
     b1 = baseline_als_spl(y,tau=smooth1,smooth=smooth1,rsd=rsd,**kwargs)
     b2 = baseline_als_spl(y,tau=smooth1,smooth=smooth2,rsd=rsd,**kwargs)
     return l2spline(np.amin([b1,b2],0),smooth1)
 
 
-def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl, 
+def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
                  smoother=partial(l2spline,s=5),ax=None,**kwargs):
     """
     Visualize results of baseline estimation
@@ -1658,7 +1680,7 @@ def viz_baseline(v,dt=1.,baseline_fn=baseline_als_spl,
     ax.plot(tv,smoother(v),'k')
     ax.plot(tv,b, 'teal',lw=1)
     ax.axis('tight')
-    
+
 
 # Labeling algorithms
 
@@ -1667,7 +1689,7 @@ def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
     low = np.percentile(v[v<=mu], percentile_low)
     vs = smoother(v, tau)
     return vs >= -low
-    
+
 def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
     return vs >= threshold
@@ -1706,7 +1728,7 @@ def multiscale_labeler_l1(signal,thresh=2,start=1,**kwargs):
     coefs = sp_decompose(signal, level=12, smoother=l1spline,base=1.5)[start:-1]
     labels = (coefs>=thresholds_l1[start:]).sum(axis=0)>=thresh
     return labels
-    
+
 def multiscale_labeler_l2(signal,thresh=4,start=1,**kwargs):
     #thresholds_l2 = array([1.6453141 , 0.64634246, 0.41638476, 0.3242796 , 0.2611729 ,
     #                       0.21204839, 0.17224974, 0.14053809, 0.11334435, 0.08955742,
@@ -1722,10 +1744,10 @@ def make_labeler_commitee(*labelers):
         return np.sum(labels,0)==Nl
     return _
 
-multiscale_labeler_l1l2 = make_labeler_commitee(multiscale_labeler_l1, 
+multiscale_labeler_l1l2 = make_labeler_commitee(multiscale_labeler_l1,
                                                partial(multiscale_labeler_l2, start=2,thresh=3))
 
-multiscale_labeler_joint = make_labeler_commitee(multiscale_labeler_l1, 
+multiscale_labeler_joint = make_labeler_commitee(multiscale_labeler_l1,
                                                  partial(multiscale_labeler_l2, start=2,thresh=3),
                                                  simple_label_lj)
 
@@ -1741,13 +1763,13 @@ from imfun import bwmorph
 def simple_pipeline_(y, labeler=percentile_label,labeler_kw=None,smoothed_rec=True,
                      noise_sigma = None,
                      correct_bias = True):
-                     
+
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
     if not any(y):
         return np.zeros_like(y)
-    
+
     ns = rolling_sd_pd(y) if noise_sigma is None else noise_sigma
 
     if correct_bias:
@@ -1786,13 +1808,13 @@ def process_signals_parallel(collection, pipeline=simple_pipeline_,pipeline_kw=N
     _pipeline_ = pipeline if pipeline_kw is None else partial(pipeline, **pipeline_kw)
     recs = pool.map(_pipeline_, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
     #pool.close()
-    #pool.join()    
+    #pool.join()
     return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
 
 
-def sp_rec_with_labels(vec, labels, 
+def sp_rec_with_labels(vec, labels,
                        min_scale=1.0,max_scale=50.,
                        with_plots=True,
                        min_size=3,
@@ -1807,17 +1829,17 @@ def sp_rec_with_labels(vec, labels,
         filtered_labels = np.zeros_like(labels)+np.sum([r.tomask() for r in regions],axis=0)
     else:
         filtered_labels=labels
-    
+
     if not sum(filtered_labels):
         return np.zeros_like(vec)
     vec1 = np.copy(vec)
     vs = smoother(vec1, min_scale, wmedian)
     weights = np.clip(labels, 0,1)
-    
+
     #vss = smoother(vec-vs,max_scale,weights=weights<0.9)
 
     vrec = smoother(vs*(vec1>0),min_scale,wmedian)
-    
+
     for i in range(niters):
         #vec1 = vec1 - kgain*(vec1-vrec) # how to use it?
         labs,nl = ndi.label(weights)
@@ -1825,21 +1847,21 @@ def sp_rec_with_labels(vec, labels,
         #for o in objs:
         #    stop = o[0].stop
         #    while stop < len(vec) and vrec[stop]>0.25*vrec[o].max():
-        #        weights[stop] = 1   
+        #        weights[stop] = 1
         #        stop+=1
         wer_grow = ndi.binary_dilation(weights)
         wer_shrink = ndi.binary_erosion(weights)
         #weights = np.where((vec1<np.mean(vec1[vec1>0])), wer, weights)
         if np.any(vrec>0):
             weights = np.where(vrec<0.5*np.mean(vrec[vrec>0]), wer_shrink, weights)
-            weights = np.where(vrec>1.25*np.mean(vrec[vrec>0]), wer_grow, weights)        
+            weights = np.where(vrec>1.25*np.mean(vrec[vrec>0]), wer_grow, weights)
         vrec = smoother(vec*weights,min_scale,wmedian)
         #weights = ndi.binary_opening(weights)
         vrec[vrec<0] = 0
         #plt.figure(); plt.plot(vec1)
         #vrec[weights<0.5] *=0.5
-        
-    
+
+
     if with_plots:
         f,ax = plt.subplots(1,1)
         ax.plot(vec, '-',ms=2, color='gray',lw=0.5,alpha=0.5)
@@ -1854,7 +1876,7 @@ def sp_rec_with_labels(vec, labels,
         return vrec
     else:
         return vec*(vrec>0)*(vec>0)*weights #weights*(vrec>0)*vec
-        
+
 
 def simple_pipeline_nojitter_(y,tau_label=1.5):
     """
@@ -1866,7 +1888,7 @@ def simple_pipeline_nojitter_(y,tau_label=1.5):
         low = np.ones(len(y),np.bool)
     bias = np.median(y[low])
     if bias > 0:
-        y = y-bias    
+        y = y-bias
     vn = y/ns
     labels = simple_label(vn, tau=tau_label,with_plots=False)
     return y * labels
@@ -1877,7 +1899,7 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
     """
     Detect and reconstruct Ca-transients in 1D signal after normalizing to baseline
     #b,ns,_ = tmvm_baseline(y)
-    """    
+    """
     #b = b + np.median(y-b)
     ns = rolling_sd_pd(y)
     b = multi_scale_simple_baseline(y,ns=ns)
@@ -1896,7 +1918,7 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
 #    pool = Pool(njobs)
 #    recs = pool.map(pipeline, [c[0] for c in collection], chunksize=4) # setting chunksize here is experimental
 #    pool.close()
-#    pool.join()    
+#    pool.join()
 #    return [(r,s,w) for r,(v,s,w) in zip(recs, collection)]
 
 
@@ -1929,7 +1951,7 @@ def segment_events_1d(rec, th=0.05, th2 =0.1, smoothing=6, min_lenth=3):
         return labeled, nlab
     mxs = mxs[mxs[:,1]>th2]
     cuts = []
-    
+
     for i in range(1,nlab+1):
         mask = labeled==i
         lmax = [m for m in mxs if mask[int(m[0])]]
@@ -1945,9 +1967,9 @@ def segment_events_1d(rec, th=0.05, th2 =0.1, smoothing=6, min_lenth=3):
                     if min_region > min_lenth:
                         cuts.append(lm[0])
                         levels[int(lm[0])]=False
-                    
+
     labeled,nlab=ndi.label(levels)
-    
+
     #plot(labeled>0)
     return labeled, nlab
     #    plot(rec*(labeled==i),alpha=0.5)
@@ -1996,14 +2018,14 @@ def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,pat
 
 def lambda_star(beta):
     return np.sqrt(2*(beta+1) + (8*beta)/(beta+1 + np.sqrt(beta**2 + 14*beta + 1)))
-    
+
 def omega_approx(beta):
     return 0.56*beta**3 - 0.95*beta**2 + 1.82*beta + 1.43
 
 def svht(sv, sh, sigma=None):
     "Gavish and Donoho 2014"
     m,n = sh
-    if m>n: 
+    if m>n:
         m,n=n,m
     beta = m/n
     omg = omega_approx(beta)
@@ -2057,7 +2079,7 @@ def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbos
         diff_new = np.linalg.norm(frames_w - rec)/nbase
         epsx = diff_new-diff_prev
         diff_prev = diff_new
-            
+
         if not i%5:
             if verbose:
                 sys.stdout.write('%0.1f %% | '%(100*i/niter))
@@ -2075,7 +2097,7 @@ def calculate_baseline_pca_asym(frames,niter=50,ncomp=20,smooth=25,th=1.5,verbos
             biases = find_bias_frames(delta,3,ns0)
             biases[np.isnan(biases)] = 0
             frames_w = rec + biases#np.array([find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
-            
+
     return frames_w
 
 ## TODO use NMF or NNDSVD instead of PCA?
@@ -2091,7 +2113,7 @@ def _calculate_baseline_nmf(frames, ncomp=None, return_type='array',smooth_fn=mu
         ncomp = len(frames)//20
     nmfx = skd.NMF(ncomp,)
     signals = nmfx.fit_transform(core.ah.ravel_frames(frames))
-    
+
     #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
     if smooth > 0:
         base_coords = np.array([smooth_fn(v,smooth=smooth) for v in pcf.coords.T]).T
@@ -2121,7 +2143,7 @@ def get_baseline_frames(frames,smooth=60,npc=None,baseline_fn=multi_scale_simple
     fs_base = fseq.from_array(base1+base2)
     fs_base.meta['channel']='baseline_comb'
     return fs_base
-    
+
 from imfun.core import coords
 from numpy.linalg import svd
 #from multiprocessing import Pool
@@ -2136,7 +2158,7 @@ def map_patches(fn, data,patch_size=10,stride=1,tslice=slice(None),njobs=1):
         expl_m = pool.map(fn, (data[(tslice,) + s] for s in squares))
     else:
         expl_m = [fn(data[(tslice,) + s]) for s in squares]
-    out = np.zeros(sh); 
+    out = np.zeros(sh);
     counts = np.zeros(sh);
     for _e, s in zip(expl_m, squares):
         out[s] += _e; counts[s] +=1.
@@ -2217,7 +2239,7 @@ def svd_denoise_tslices(frames, twindow=50,
                         verbose=True,
                         denoiser=_patch_pca_denoise_with_shifts,
                         **denoiser_kw):
-    
+
     L = len(frames)
     sh =  frames[0].shape
     if twindow < L:
@@ -2225,21 +2247,21 @@ def svd_denoise_tslices(frames, twindow=50,
     else:
         tslices = [slice(0, L)]
     counts = np.zeros(L)
-    
+
     if mask_of_interest is None:
         mask_list = (np.ones(sh) for t in tslices)
     elif np.ndim(mask_of_interest) == 2:
         mask_list = (mask_of_interest for  t in tslices)
     else:
         mask_list = (mask_of_interest[t].mean(0)>th for t in tslices)
-    
+
     out = np.zeros(frames.shape)
     for k,ts,m in zip(range(L), tslices, mask_list):
         out[ts] += denoiser(frames[ts], mask_of_interest=m, nhood=nhood, npc=npc, **denoiser_kw)
         counts[ts] +=1
         if verbose:
             sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
-        
+
     return out/counts[:,None,None]
 
 def block_svd_separate_tslices(frames, twindow=200,
@@ -2250,7 +2272,7 @@ def block_svd_separate_tslices(frames, twindow=200,
                                verbose=True,
                                baseline_post_smooth=10,
                                **denoiser_kw):
-    
+
     L = len(frames)
     sh =  frames[0].shape
 
@@ -2261,14 +2283,14 @@ def block_svd_separate_tslices(frames, twindow=200,
     counts = np.zeros(L)
 
 
-    
+
     if mask_of_interest is None:
         mask_list = (np.ones(sh) for t in tslices)
     elif np.ndim(mask_of_interest) == 2:
         mask_list = (mask_of_interest for  t in tslices)
     else:
         mask_list = (mask_of_interest[t].mean(0)>th for t in tslices)
-    
+
     out_s = np.zeros(frames.shape)
     out_b = np.zeros(frames.shape)
     for k,ts,m in zip(range(L), tslices, mask_list):
@@ -2278,13 +2300,13 @@ def block_svd_separate_tslices(frames, twindow=200,
         counts[ts] += 1
         if verbose:
             sys.stdout.write('\n processed time-slice %d out of %d\n'%(k+1, len(tslices)))
-        
+
     out_s =  out_s/counts[:,None,None]
     out_b = out_b/counts[:,None,None]
     if baseline_post_smooth > 0:
         out_b = ndi.gaussian_filter(out_b, (baseline_post_smooth, 0, 0))
     return out_s, out_b
-    
+
 
 
 def make_enh5(dfof, twindow=50, nhood=5, stride=2, temporal_filter=3, verbose=False):
@@ -2300,7 +2322,7 @@ def make_enh5(dfof, twindow=50, nhood=5, stride=2, temporal_filter=3, verbose=Fa
         print('Done')
     fsx.meta['channel']='-'.join(['newrec5'])
     return fsx
-    
+
 
 def max_shifts(shifts,verbose=0):
     #ms = np.max(np.abs([s.fn_((0,0)) if s.fn_ else s.field[...,0,0] for s in shifts]),axis=0)
@@ -2327,7 +2349,7 @@ def process_framestack(frames,min_area=9,verbose=False,
     """
     Default pipeline to process a stack of frames containing Ca fluorescence to find astrocytic Ca events
     Input: F(t): temporal stack of frames (Nframes x Nx x Ny)
-    Output: Collection of three frame stacks containting ΔF/F0 signals, one thresholded and one denoised, and a baseline F0(t): 
+    Output: Collection of three frame stacks containting ΔF/F0 signals, one thresholded and one denoised, and a baseline F0(t):
             fseq.FStackColl([fsx, dfof_filtered, F0])
     """
     from imfun import fseq
@@ -2346,7 +2368,7 @@ def process_framestack(frames,min_area=9,verbose=False,
         dfof = patch_pca_denoise2(dfof, spatial_filter=3, temporal_filter=1, npc=5)
     fs_dfof = fseq.from_array(dfof)
     fs_dfof.meta['channel'] = 'ΔF_over_F0'
-    
+
     if verbose:
         print('detecting events')
     ## todo: decide, whether we actually need the cleaning step.
@@ -2362,7 +2384,7 @@ def process_framestack(frames,min_area=9,verbose=False,
     fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0),meta=meta)
     fscoll = fseq.FStackColl([fsx, fs_dfof, fs_f0])
     return fscoll
-    
+
 
 def segment_events(dataset,threshold=0.01):
     labels, nlab = ndi.label(np.asarray(dataset,dtype=_dtype_)>threshold)
