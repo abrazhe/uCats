@@ -248,7 +248,8 @@ def process_record(fs, fname, series, args):
                                with_clusters = args.detection_use_clusters,
                                svd_detection_plow = args.detection_low_percentile*2,
                                spatial_min_cluster_size=5)
-        fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+        fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
+        #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
 
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
@@ -382,6 +383,30 @@ def process_record(fs, fname, series, args):
     if h5f:
         h5f.close()
     return # from process_record()
+
+def downsample_stack(frames):
+    return np.array([ucats.downsample_image(f) for f in frames])
+
+def upsample_stack(frames):
+    return np.array([ucats.upsample_image(f) for f in frames])
+
+def multiscale_process_frames(frames, twindow, **_process_kwargs):
+    frames_ds1 = downsample_stack(frames)
+    frames_ds2 = downsample_stack(frames_ds1)
+
+    fdelta2, fb2 = ucats.block_svd_separate_tslices(frames_ds2, twindow,  **_process_kwargs)
+    fdelta2 = upsample_stack(fdelta2)
+    fb2 = upsample_stack(fb2)
+
+    frames_ds1 = frames_ds1 - fb2 - fdelta2
+    fdelta1, fb1 = ucats.block_svd_separate_tslices(frames_ds1, twindow,  **_process_kwargs)
+
+    fdelta1 = upsample_stack(fdelta1 + fdelta2)
+    fb1 = upsample_stack(fb1 + fb2)
+
+    fdelta, fb = ucats.block_svd_separate_tslices(frames-fdelta1-fb1, twindow,  **_process_kwargs)
+    return fdelta + fdelta1, fb + fb1
+
 
 
 

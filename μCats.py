@@ -110,6 +110,14 @@ def signals_from_array_avg(data, stride=2, patch_size=5):
     #signals =  array([d[(slice(None),)+s].sum(-1).sum(-1)/prod(d[0][s].shape) for s in squares])
     #return [(v,sq,w) for v,sq in zip(signals, squares)]
 
+def downsample_image(img):
+    sigma_0 = 0.6
+    sigma = sigma_0*(1/0.25 - 1 )**0.5
+    im = ndi.gaussian_filter(img, sigma, mode='nearest')
+    return ndi.zoom(im, 0.5)
+
+def upsample_image(img):
+    return ndi.zoom(img,2,mode='nearest')
 
 def clip_outliers(m, plow=0.5, phigh=99.5):
     px = np.percentile(m, (plow, phigh))
