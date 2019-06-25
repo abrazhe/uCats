@@ -348,7 +348,7 @@ def process_record(fs, fname, series, args):
         #   del coll_
         print('--->Done')
         if args.do_save_enh:
-            fsx.to_hdf5(detected_name)
+            fsx.to_hdf5(detected_name, compress_level=3)
 
 
     # VI.  Make movies
