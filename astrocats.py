@@ -348,7 +348,7 @@ def process_record(fs, fname, series, args):
         #   del coll_
         print('--->Done')
         if args.do_save_enh:
-            fsx.to_hdf5(detected_name)
+            fsx.to_hdf5(detected_name, compress_level=3)
 
 
     # VI.  Make movies
@@ -385,24 +385,42 @@ def process_record(fs, fname, series, args):
     return # from process_record()
 
 def downsample_stack(frames):
-    return np.array([ucats.downsample_image(f) for f in frames])
+    return np.array([ucats.downsample_image(f) for f in frames], dtype=ucats._dtype_)
 
-def upsample_stack(frames):
-    return np.array([ucats.upsample_image(f) for f in frames])
+def upsample_stack(frames, target=None):
+    if target is None:
+        target = np.array([ucats.upsample_image(f) for f in frames], dtype=ucats._dtype_)
+    else:
+        for k,f in enumerate(frames):
+            copy_to_larger_cpad(ucats.upsample_image(f), target[k])
+    return target
+
+
+
+
+def copy_to_larger_cpad(source, destination):
+    nr,nc = source.shape
+    nrd,ncd = destination.shape
+    crop = (slice(min(nr,nrd)), slice(min(nc,ncd)))
+    destination[crop] = source[crop]
+    if np.any(np.array(destination.shape)>source.shape):
+        destination[nr:,:nc] = source[nr-1,:][None,:]
+        destination[:nr,nc:] = source[:,nc-1][:,None]
+        destination[nr:,nc:] = source[-1,-1]
 
 def multiscale_process_frames(frames, twindow, **_process_kwargs):
     frames_ds1 = downsample_stack(frames)
     frames_ds2 = downsample_stack(frames_ds1)
 
     fdelta2, fb2 = ucats.block_svd_separate_tslices(frames_ds2, twindow,  **_process_kwargs)
-    fdelta2 = upsample_stack(fdelta2)
-    fb2 = upsample_stack(fb2)
+    fdelta2 = upsample_stack(fdelta2, np.zeros_like(frames_ds1))
+    fb2 = upsample_stack(fb2, np.zeros_like(frames_ds1))
 
     frames_ds1 = frames_ds1 - fb2 - fdelta2
     fdelta1, fb1 = ucats.block_svd_separate_tslices(frames_ds1, twindow,  **_process_kwargs)
 
-    fdelta1 = upsample_stack(fdelta1 + fdelta2)
-    fb1 = upsample_stack(fb1 + fb2)
+    fdelta1 = upsample_stack(fdelta1 + fdelta2, np.zeros_like(frames))
+    fb1 = upsample_stack(fb1 + fb2, np.zeros_like(frames))
 
     fdelta, fb = ucats.block_svd_separate_tslices(frames-fdelta1-fb1, twindow,  **_process_kwargs)
     return fdelta + fdelta1, fb + fb1
