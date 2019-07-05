@@ -247,6 +247,7 @@ def process_record(fs, fname, series, args):
                                min_comps=args.detection_min_components,
                                with_clusters = args.detection_use_clusters,
                                svd_detection_plow = args.detection_low_percentile*2,
+                               baseline_smoothness=args.baseline_smoothness,
                                spatial_min_cluster_size=5)
         fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
         #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
@@ -384,9 +385,11 @@ def process_record(fs, fname, series, args):
         h5f.close()
     return # from process_record()
 
+#todo: move to ucats?
 def downsample_stack(frames):
     return np.array([ucats.downsample_image(f) for f in frames], dtype=ucats._dtype_)
 
+#todo: move to ucats?
 def upsample_stack(frames, target=None):
     if target is None:
         target = np.array([ucats.upsample_image(f) for f in frames], dtype=ucats._dtype_)
@@ -397,7 +400,7 @@ def upsample_stack(frames, target=None):
 
 
 
-
+#todo: move to ucats?
 def copy_to_larger_cpad(source, destination):
     nr,nc = source.shape
     nrd,ncd = destination.shape
