@@ -101,7 +101,7 @@ def main():
         '--detection-no-second-pass':dict(action='store_true'),
         '--baseline-smoothness': dict(default=150,type=float),
         '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
-        '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
+        #'--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
         '--event-peak-threshold':dict(default=0.085, type=float,help='event must contain a peak with at least this ΔF/F value'),
         '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
         '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
@@ -236,7 +236,7 @@ def process_record(fs, fname, series, args):
     else:
         print('Denoising frames and separating background via block-SVD in sqrt-ed data')
         #todo: take parameters from arguments to the script
-        print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/600)-1))
+        print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/args.detection_temporal_window)-1))
         if args.detection_do_variance_stabilization:
             xt = 2*np.sqrt(frames)
         else:
@@ -263,11 +263,11 @@ def process_record(fs, fname, series, args):
         #if any(np.isnan(correction_bias)):
         #    correction_bias = np.zeros(correction_bias.shape)
         correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
-        fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True)
+        fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
         if args.detection_do_variance_stabilization:
             frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
         else:
-            frames_n, benh = fdelta, fb
+            frames_dn, benh = fdelta, fb
         print('storing baseline fluorescence estimate')
         ucats.store_baseline_pickle(baseline_name,benh)
 
@@ -366,7 +366,9 @@ def process_record(fs, fname, series, args):
     bgclim[1] *= 1.25
     p0.clims[0] = bgclim
     p.clims[0] = bgclim
-    p.clims[1] = (0.025,0.25)
+    #p.clims[1] = (0.025,0.25)
+
+    p.clims[1] = (args.event_segmentation_threshold, np.mean(np.max(fsx.data,0)))
     p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
     ui.pickers_to_movie([p0, p],nametag+'-b-detected.mp4', titles=('raw','processed'),
@@ -694,7 +696,6 @@ def remove_small_regions(mask, min_size=200):
 from scipy.ndimage import binary_fill_holes, binary_closing, binary_opening
 def dark_area_mask(mf,phigh=99.5, th_scale=0.1):
     mask = mf > np.percentile(mf,phigh)*th_scale
-    #return binary_fill_holes(remove_small_regions(binary_opening(binary_closing(mask))))
     return remove_small_regions(binary_opening(binary_closing(mask)))
 
 from matplotlib import animation
