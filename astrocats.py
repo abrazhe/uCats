@@ -377,7 +377,7 @@ def process_record(fs, fname, series, args):
                         writer=args.writer)
 
     print('segmenting and animating events')
-    events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32))
+    events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc.data/benh.data-1)
     if len(events.filtered_coll):
         events.to_csv(nametag+'-events.csv')
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
