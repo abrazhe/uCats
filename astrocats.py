@@ -367,8 +367,9 @@ def process_record(fs, fname, series, args):
     p0.clims[0] = bgclim
     p.clims[0] = bgclim
     #p.clims[1] = (0.025,0.25)
-
-    p.clims[1] = (args.event_segmentation_threshold, np.mean(np.max(fsx.data,0)))
+    mip = np.max(fsx.data,0)
+    p.clims[1] = (args.event_segmentation_threshold, np.mean(mip[mip>0]))
+    print('Testing clims: ',p.clims[1])
     p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
     ui.pickers_to_movie([p0, p],nametag+'-b-detected.mp4', titles=('raw','processed'),
