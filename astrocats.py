@@ -74,7 +74,8 @@ def main():
         '--with-detection-movies': dict(action='store_true'),
         '--suff': dict(default='', help="optional suffix to append to saved registration recipe"),
         '--fps': dict(default=25,type=float,help='fps of exported movie'),
-        '--pca-denoise': dict(action='store_true'),
+        '--motion-with-adaptive_filter': dict(action='store_true'),
+        '--motion-with-pca-denoise': dict(action='store_true'),
         '--codec': dict(default='libx264', help='movie codec'),
         '--writer': dict(default='ffmpeg', help='movie writer'),
         '--no-save-enh': dict(action='store_true'),
@@ -249,8 +250,8 @@ def process_record(fs, fname, series, args):
                                svd_detection_plow = args.detection_low_percentile*2,
                                baseline_smoothness=args.baseline_smoothness,
                                spatial_min_cluster_size=5)
-        fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
-        #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+        #fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
+        fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
 
         # III. Calculate ΔF/F
         print('Calculating relative fluorescence changes')
@@ -500,6 +501,26 @@ def apply_warps_and_crop(fs, warps, verbose, njobs):
         fsc.data = ucats.crop_by_max_shift(fsc.data,warps,mx_warps)
     return fsc
 
+from imfun.core import fnutils
+def preprocess_for_registration_1(frames, n_components=None, s_smooth=1., t_smooth=3, background_smooth=30, with_adaptive_filter=False):
+    if n_components is None:
+        n_components = len(frames)//50+5
+    pcf = components.pca.PCA_frames(frames, npc=n_components) # note: number of components may also have to be fixed
+    vh_frames = pcf.vh.reshape(-1, *pcf.sh)
+    coords_s = array([ucats.smoothed_medianf(v,0.5,t_smooth) for v in pcf.coords.T]).T
+    processors = [lambda f: ucats.l2spline(f,s_smooth), lambda f: f-ucats.l2spline(f,background_smooth)]
+    if with_adaptive_filter:
+        processors = [lambda f,: ucats.adaptive_filter_2d(f, th=1.5, smooth=25, reverse=True,
+                                                         keep_clusters=False,
+                                                         smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth))] + processors
+
+    process_spatial_component = fnutils.flcompose(*processors)
+    pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
+    pcf.tsvd.components_ = pcf.vh
+    pcf.mean_frame_filtered_  = process_spatial_component(pcf.mean_frame)
+    fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(frames),*pcf.sh) + pcf.mean_frame_filtered_
+    fsm_filtered = fsm_filtered.astype(ucats._dtype_)
+    return fsm_filtered, pcf
 
 def stabilize_motion(fs, args, nametag='',suff=None):
     "Try to remove motion artifacts by image registratio"
@@ -518,12 +539,6 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     print('warps name:', warps_name)
     fsm_filtered = None
     newframes = None
-
-    if os.path.exists(warps_name) and (not args.with_motion_movies):
-        final_warps = ofreg.warps.from_dct_encoded(warps_name)
-        fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
-        return fsc, final_warps
-
 
 
     # If reusing previously calculating warps and want to re-make the movie
@@ -549,26 +564,9 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     #if args.verbose > 1: print('done spatial median filter')
 
     from imfun.core import fnutils
-    if args.pca_denoise:
-        pcf = components.pca.PCA_frames(2*fsm_filtered**0.5, npc=len(fsm)//50+5)
-        vh_frames = pcf.vh.reshape(-1, *pcf.sh)
-
-        #process_spatial_component = fnutils.flcompose(
-        #    lambda f: ucats.adaptive_median_filter_2d(f,th=2,smooth=25,reverse=True),
-        #    lambda f: ucats.adaptive_median_filter_2d(f,th=5,smooth=3),
-        #    lambda f: ucats.l2spline(f,0.5))
-        process_spatial_component = fnutils.flcompose(
-            lambda f: ucats.adaptive_filter_2d(f,th=1.5,smooth=25,reverse=True, keep_clusters=False,
-                                               smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth)),
-            lambda f: ucats.l2spline(f,1.0),
-            lambda f: f-ucats.l2spline(f, 30),
-        )
-        #smooth_and_detrend = lambda f_: l2spline(f_,1.0)-l2spline(f_,30)
-        coords_s = array([ucats.smoothed_medianf(v,0.5,3) for v in pcf.coords.T]).T
-        pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
-        pcf.tsvd.components_ = pcf.vh
-        fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(fsm_filtered),*pcf.sh) + process_spatial_component(pcf.mean_frame)
-        fsm_filtered = fsm_filtered.astype(ucats._dtype_)
+    if args.motion_with_pca_denoise:
+        fsm_filtered,pcf = preprocess_for_registration_1(fsm_filtered, with_adaptive_filter=args.motion_with_adaptive_filter)
+        pcf = None
         if args.verbose>1: print('done PCA-based denoising')
     else: pcf = None
 
