@@ -585,7 +585,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
                         Wnew_perm = signals_permuted@(Xdiff)
                         Wnew_frames = Wnew.reshape(W_images.shape)
                         Wnew_perm_frames = Wnew_perm.reshape(W_images.shape)
-                        # below some parameters need formalization and tuning for optimal results on in vivo vs in situ dataккк
+                        # below some parameters need formalization and tuning for optimal results on in vivo vs in situ data
                         Wmasks = np.array([threshold_object_size(np.abs(f1) > 3*np.percentile(np.abs(f2),99),5)
                                            for f1,f2 in zip(Wnew_frames,Wnew_perm_frames)])
                         Wx_b = Wx_b*Wmasks.reshape(Wx_b.shape)
@@ -1416,7 +1416,7 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     """
     b,ns,res = tmvm_baseline(y,smooth_level=smooth,symmetric=symmetric)
     d = res-b
-    return b + np.median(d[d<th*ns]) # + bias as constant shift
+    return b + np.median(d[d<=th*ns]) # + bias as constant shift
 
 
 def smoothed_medianf(v,smooth=10,wmedian=10):
@@ -1428,8 +1428,12 @@ def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
-    b2 = b + np.median(d[np.abs(d)<=th*ns]) # correct scalar shift
-    return b2
+    if not np.any(ns):
+        ns = np.std(y)
+    bg_points = d[np.abs(d)<=th*ns]
+    if len(bg_points) > 10:
+        b = b + np.median(bg_points) # correct scalar shift
+    return b
 
 
 def find_bias(y, th=3, ns=None):
@@ -1535,7 +1539,7 @@ def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clus
     imgf = smoother(img, smooth)
     details = img - imgf
     sd = mad_std(img)
-    outliers = np.abs(details) > th*sd
+    outliers = np.abs(details) > th*sd # in real adaptive filter the s.d. must be rolling!
     if keep_clusters:
         clusters = threshold_object_size(outliers,min_cluster_size)
         outliers = ~clusters if reverse else outliers^clusters
@@ -1604,6 +1608,17 @@ def rolling_sd_scipy(v,hw=None,with_plots=False,correct_factor=1.,smooth_output=
         out = l2spline(out, s=2*hw)
     return out
 
+def rolling_sd_scipy_nd(arr,hw=None,correct_factor=1.,smooth_output=True):
+    if hw is None: hw = int(np.ceil(np.max(arr.shape)/10))
+    padded = np.pad(arr,hw,mode='reflect')
+    rolling_median = lambda x: ndi.median_filter(x, 2*hw)
+    crop = (slice(hw,-hw),)*np.ndim(arr)
+    out = 1.4826*rolling_median(np.abs(padded-rolling_median(padded)))[crop]
+
+    out = out/correct_factor
+    if smooth_output:
+        out = l2spline(out, s=hw)
+    return out
 
 def baseline_als_spl(y, k=0.5, tau=11, smooth=25., p=0.001, niter=100,eps=1e-4,
                  rsd = None,
@@ -1696,7 +1711,7 @@ def percentile_label(v, percentile_low=2.5,tau=2.0,smoother=l2spline):
     mu = min(np.median(v),0)
     low = np.percentile(v[v<=mu], percentile_low)
     vs = smoother(v, tau)
-    return vs >= -low
+    return vs >= mu-low
 
 def simple_label(v, threshold=1.0,tau=5., smoother=l2spline,**kwargs):
     vs = smoother(v, tau)
@@ -2342,7 +2357,8 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
     if mx_shifts is None:
         mx_shifts = max_shifts(shifts)
     lims = 2*mx_shifts
-    return data[:,lims[1]:-lims[1],lims[0]:-lims[0]]
+    sh = data.shape[1:]
+    return data[:,lims[1]:sh[0]-lims[1],lims[0]:sh[1]-lims[0]]
 
 
 
