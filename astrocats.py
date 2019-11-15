@@ -439,12 +439,17 @@ def multiscale_process_frames(frames, twindow, **_process_kwargs):
 def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
     name_low = name.lower()
     read_as_array = True
-    if endswith_any(name_low, ('.tif', '.tiff', '.lsm')):
+    if endswith_any(name_low, ('.tif', '.tiff')):
         reader = tifffile
+    elif endswith_any(name_low, ('.lsm')):
+        reader = fseq.from_lsm
+        read_as_array = False
+    elif endswith_any(name_low, ('.oib')):
+            reader = fseq.from_oif
+            read_as_array = False
     elif endswith_any(name_low, ('.czi',)):
         reader = czifile
     elif endswith_any(name_low, ('.mes',)):
-
         reader = fseq.from_mes
         read_as_array = False
     else:
