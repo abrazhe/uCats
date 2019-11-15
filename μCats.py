@@ -2361,7 +2361,13 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
     return data[:,lims[1]:sh[0]-lims[1],lims[0]:sh[1]-lims[0]]
 
 
-
+def scramble_data(frames):
+    L,nr,nc = frames.shape
+    out = zeros_like(frames)
+    for r in range(nr):
+        for c in range(nc):
+            out[:,r,c] = np.random.permutation(frames[:,r,c])
+    return out
 
 def process_framestack(frames,min_area=9,verbose=False,
                        do_dfof_denoising = True,
