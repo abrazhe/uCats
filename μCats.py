@@ -1929,7 +1929,7 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
     vn = (y-b)/ns
     labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
     rec = sp_rec_with_labels(y, labels,with_plots=False,)
-    return where(b>0,rec,0)
+    return np.where(b>0,rec,0)
 
 #from multiprocessing import Pool
 #def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
