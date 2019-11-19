@@ -1498,7 +1498,7 @@ def mad_std(v,axis=None):
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def expand_mask_by_median_filter(m, size=3,niter=1,with_cleanup=False,min_obj_size=2):
+def refine_mask_by_median_filter(m, size=3,niter=1,with_cleanup=False,min_obj_size=2):
     out = np.copy(m)
     for i in range(niter):
         out += ndi.median_filter(out,size)
