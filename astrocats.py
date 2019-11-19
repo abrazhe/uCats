@@ -273,7 +273,7 @@ def process_record(fs, fname, series, args):
         ucats.store_baseline_pickle(baseline_name,benh)
 
         #nsdt = ucats.std_median(fdelta,axis=0)
-        mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
+        mask_pipeline = lambda m: ucats.threshold_object_size(ucats.refine_mask_by_median_filter(m,niter=3),9)
         mask1 = fdelta >= th1
         mask2 = frames_dn/benh >= 0.01 # 1% change from baseline
         mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
