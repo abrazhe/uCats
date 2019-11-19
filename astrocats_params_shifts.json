@@ -4,6 +4,6 @@
  "ca_channel": 1,
  "with_motion_movies": 1,
  "suff":"astrocat005",
- "pca_denoise": 1,
+ "motion_with_pca_denoise": 1,
  "ncpu":1
 }
