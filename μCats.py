@@ -1929,7 +1929,7 @@ def simple_pipeline_with_baseline(y,tau_label=1.5):
     vn = (y-b)/ns
     labels = simple_label_lj(vn, tau=tau_label,with_plots=False)
     rec = sp_rec_with_labels(y, labels,with_plots=False,)
-    return where(b>0,rec,0)
+    return np.where(b>0,rec,0)
 
 #from multiprocessing import Pool
 #def process_signals_parallel(collection, pipeline=simple_pipeline_,njobs=4):
@@ -2010,16 +2010,16 @@ def pca_flip_signs(pcf,medianw=None):
         pcf.tsvd.components_[i]*=sg
     return pcf
 
-def svd_flip_signs(u,vh,medianw=None):
-    L = len(u)
-    if medianw is None:
-        medianw = L//5
-    for i,c in enumerate(u.T):
-        sk = skew(c-ndi.median_filter(c,medianw))
-        sg = np.sign(sk)
-        u[:,i] *= sg
-        vh[i] *= sg
-    return u,vh
+# def svd_flip_signs(u,vh,medianw=None):
+#     L = len(u)
+#     if medianw is None:
+#         medianw = L//5
+#     for i,c in enumerate(u.T):
+#         sk = skew(c-ndi.median_filter(c,medianw))
+#         sg = np.sign(sk)
+#         u[:,i] *= sg
+#         vh[i] *= sg
+#     return u,vh
 
 
 def calculate_baseline(frames,pipeline=multi_scale_simple_baseline, stride=2,patch_size=5,return_type='array',
@@ -2487,3 +2487,632 @@ class EventCollection:
             cond = self.labels[o]==k+1
             out[o][cond] = k
         return out
+
+
+## -- this is temporary! ---
+## -- copypaste of test_denoising.py --
+#!/usr/bin/env python
+
+## TODO: add second pass (correction) as an option
+
+import os,sys
+import h5py
+
+import argparse
+import pickle
+import gzip
+import json
+
+from functools import partial,reduce
+import operator as op
+
+
+
+import numpy as np
+from numpy import *
+from numpy.linalg import norm, svd
+from numpy.random import randint
+
+from scipy import ndimage,signal
+from scipy import ndimage as ndi
+from scipy import stats
+
+from sklearn import cluster as skcluster
+
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+
+from skimage.external import tifffile
+
+import pandas as pd
+
+from tqdm import tqdm
+
+
+from imfun import fseq,core,ui
+from imfun import multiscale
+from imfun import ofreg
+from imfun.ofreg import stackreg, imgreg
+from imfun.external import czifile
+
+from imfun.filt.dctsplines import l2spline, l1spline
+
+from imfun.multiscale import atrous
+from imfun import components
+
+# Some global parameters
+# TODO: move to argparse
+_baseline_smoothness_ = 300
+_nclusters_ = 32
+_do_pruning_ = False
+_do_scrambling_ = False
+_dtype_=np.float32
+
+class Anscombe:
+    "Variance-stabilizing transformation"
+    @staticmethod
+    def transform(data):
+        return 2*(data+3/8)**0.5
+    @staticmethod
+    def inverse_transform(tdata):
+        tdata_squared = tdata**2
+        return tdata_squared/4 + np.sqrt(3/2)*(1/(4*tdata) + 5/(8*tdata**3)) - 11/8/tdata_squared -1/8
+
+def slice_center_in_square(sl, sq):
+    "test if center of a smaller n-dim slice is within a bigger n-dim slice"
+    c = [(s.stop+s.start)*0.5 for s in sl]
+    return np.all([dim.start <= cx < dim.stop for cx,dim in zip(c, sq)])
+
+def slice_overlaps_square(sl, sq):
+    "test if a smaller n-dim slice overlaps with a bigger n-dim slice"
+    return np.all([((dim.start <= s.start < dim.stop) or (dim.start <= s.stop < dim.stop)) for s,dim in zip(sl, sq)])
+
+def slice_starts_in_square(sl, sq):
+    "test if start of a smaller n-dim slice is within a bigger n-dim slice"
+    o = [s.start for s in sl]
+    return np.all([dim.start <= ox < dim.stop for ox,dim in zip(o, sq)])
+
+from scipy.stats import skew
+def svd_flip_signs(u,vh, mode='v'):
+    "flip signs of U,V pairs of the SVD so that either V or U have positive skewness"
+    for i in range(len(vh)):
+        if mode == 'v':
+            sg = sign(skew(vh[i]))
+        else:
+            sg = sign(skew(u[:,i]))
+        u[:,i] *= sg
+        vh[i] *= sg
+    return u,vh
+
+
+def extract_random_cubic_patch(frames, w=10):
+    """Extract small cubic patch at a random location from a stack of frames
+    Parameters:
+     - frames: TXY 3D array-like, a stack of frames
+     - w : scalar int, side of the cubic patch [10]
+    """
+    sl = tuple()
+    starts = (randint(0, dim-w) for dim in frames.shape)
+    sl =  tuple(slice(j, j+w) for j in starts)
+    return frames[sl]
+
+
+def _simple_stats(x):
+    "Just return mean and variance of a sample"
+    return (x.mean(), x.var())
+
+from sklearn import linear_model
+
+# TODO: eventually move to μCats
+def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
+                             ntries=100,
+                             with_plot=False,save_to=None,
+                             return_type='mean'):
+    """
+    Estimage gain and offset parameters used by the imaging system
+    For a given stack of frames, extract many small cubic patches and then fit a line
+    as variance ~ mean. The slope of the line is the gain, the intercept of the X axis
+    is the offset or system bias.
+
+    Parameters:
+     - frames : TXY 3D array-like, a stack of frames to analyze
+     - patch_width: scalar int, side of a cubic patch to randomly sample from frames (default: 20)
+     - npatches: scalar int, number of random patches to draw from the frames (default: 100,000)
+     - ntries: scalar int, number of patch ensembles to fit at a time, next parameters will be pooled (default: 100)
+     - with_plot: bool, whether to make a plot of the mean-variance line fit
+     - save_to: string, name of a file to save the plot to, has no effect if with_plot is False (default: None, i.e. don't save)
+     - return_type: {'mean','min','median','ransac'} -- which estimate of the line fit to return
+    """
+
+    pxr = array([_simple_stats(extract_random_cubic_patch(frames,patch_width)) for i in range(npatches)])
+
+    pxr = pxr[pxr[:,0]<np.percentile(pxr[:,0],95)]
+    vm,vv=pxr.T
+
+    gains = np.zeros(ntries, _dtype_)
+    offsets = np.zeros(ntries,_dtype_)
+
+    for i in range(ntries):
+        vmx,vvx = np.random.permutation(pxr)[:npatches//10].T
+        regressor = linear_model.RANSACRegressor()
+        regressor.fit(vmx[:,None], vvx)
+        re = regressor.estimator_
+        gain, intercept = re.coef_, re.intercept_
+        offset = -intercept/gain
+        gains[i] = gain
+        offsets[i] = offset
+
+
+    regressorg = linear_model.RANSACRegressor()
+    regressorg.fit(vm[:,None],vv)
+    gainx = regressorg.estimator_.coef_
+    interceptx = regressorg.estimator_.intercept_
+    offsetx = -interceptx/gainx
+    results = {
+        'min': (amin(gains), amin(offsets)),
+        'mean': (np.mean(gains), np.mean(offsets)),
+        'median': (np.median(gains), np.median(offsets)),
+        'ransac': (gainx, offsetx)
+    }
+
+    print('RANSAC: Estimated gain %1.2f and offset %1.2f'%(results['ransac']))
+    print('ML: Estimated gain %1.2f and offset %1.2f'%(results['mean']))
+    min_gain, min_offset = amin(gains), amin(offsets)
+
+    if with_plot:
+        fmt = ' (%1.2f, %1.2f)'
+
+        f,ax = plt.subplots(1,1)
+        h = ax.hexbin(vm, vv, bins='log',cmap='viridis',mincnt=5)
+        xlow,xhigh = vm.min(), percentile(vm,99)
+        ylow,yhigh = vv.min(), percentile(vv,99)
+        xfit = np.linspace(vm.min(),xhigh)
+        linefit = lambda gain,offset: gain*(xfit-offset)
+        plt.axis((xlow,xhigh,ylow,yhigh))
+        line_fmts = [('--','skyblue'), ('-','g'), ('--','m')]
+        for key, lp in zip(('min','mean','ransac'), line_fmts):
+            gain,offset = results[key]
+            plt.plot(xfit, linefit(gain,offset),ls=lp[0],color=lp[1],label=key+': '+fmt%(gain,offset))
+
+        plt.legend(loc='upper left')
+        plt.setp(ax, xlabel='Mean', ylabel='Variance', title='Mean-Variance for small cubic patches')
+        plt.colorbar(h)
+        if save_to is not None:
+            f.savefig(save_to)
+    return results[return_type]
+
+
+
+def shuffle_signals(m):
+    "Given a collection of signals, randomly permute each"
+    return array([permutation(v) for v in m])
+
+def weight_components(data, components, rank=None, Npermutations=100, clip_percentile=95):
+    """
+    For a collection of signals (each row of input matrix is a signal),
+    try to decide if using projection to the principal or svd components should describes
+    the original signals better than time-scrambled signals. Returns a binary vector of weights
+
+    Parameters:
+     - data: (Nsignals,Nfeatures) matrix. Each row is one signal
+     - compoments: temporal principal components
+     - rank: number of first PCs to use
+     - Npermutations: how many permutations to try (default: 100)
+     - clip_percentile: P, if a signal is better represented than P% of scrambled signals,
+                        the weight for this signal is 1 (default: P=95)
+    Returns:
+     - vector of weights (Nsignals,)
+    """
+    v_shuffled = (shuffle_signals(components[:rank]) for i in range(Npermutations))
+    coefs_randomized = array([np.abs(data@vt.T).T for vt in v_shuffled])
+    coefs_orig = np.abs(data@components[:rank].T).T
+    w = zeros((len(data),len(components[:rank])), _dtype_)
+    for j in arange(w.shape[1]):
+        w[:,j] = coefs_orig[j] >= percentile(coefs_randomized[:,j,:],clip_percentile,axis=0)
+    return w
+
+def tsvd_rec_with_weighting(data, rank=None):
+    """Do truncated SVD approximation using coefficient pruning by comparisons to shuffled data
+    Input: data matrix (Nsamples, Nfeatures), each row is interpreted as a signal or feature vector
+    Output: approximated data using rank-truncated SVD
+    """
+    dc = data.mean(1)[:,None]
+    u,s,vh = svd(data-dc,False)
+    if rank is None:
+        rank = min_ncomp(s, data.shape) + 1
+    w = weight_components(data-dc, vh, rank)
+    return (u[:,:rank]*w)@diag(s[:rank])@vh[:rank] + dc
+
+
+import itertools as itt
+
+def make_grid2(shape,sizes,strides):
+    """Make a generator over sets of slices which go through the provided shape
+       by a stride
+    """
+    if not np.iterable(sizes):
+        sizes = (sizes,)*len(shape)
+    if not np.iterable(strides):
+        strides = (strides,)*len(shape)
+
+    origins =  itt.product(*[list(range(0,dim-size,stride)) + [dim-size]
+                            for (dim,size,stride) in zip(shape,sizes,strides)])
+    squares = tuple(tuple(slice(a,a+size) for a,size in zip(o,sizes)) for o in origins)
+    return squares
+
+def patch_tsvds_from_frames(frames,
+                            patch_ssize=10, patch_tsize=600,
+                            sstride=2, tstride=300,  min_ncomps=1,
+                            do_pruning=_do_pruning_,
+                            tsmooth=0,ssmooth=0):
+    """
+    Slide a rectangle spatial window and extract local dynamics in this window (patch),
+    then do truncated SVD decomposition of the local dynamics for each patch.
+
+    Input:
+     - frames: a TXY 3D stack of frames (array-like)
+     - stride: spacing between windows (default: 2 px)
+     - patch_size: spatial size of the window (default: 10 px)
+     - min_ncomps: minimal number of components to retain
+     - do_pruning: whether to do coefficient pruning based on comparison to shuffled signals
+     - tsmooth: scalar, if > 0, smooth temporal components with adaptive median filter of this size
+     - ssmmooth: scalar, if > 0, smooth spatial compoments with adaptive median filter of this size
+
+    Output:
+     - list of tuples of the form:
+       (temporal components, spatial components, patch average, location of the patch in data, patch shape)
+    """
+    d = np.array(frames).astype(_dtype_)
+    acc = []
+    #squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
+    L = len(frames)
+    patch_tsize = min(L, patch_tsize)
+    if tstride > patch_tsize :
+        tstride = patch_tsize//2
+    tstride = min(L, tstride)
+    squares = make_grid2(frames.shape, (patch_tsize, patch_ssize, patch_ssize), (tstride, sstride, sstride))
+    if tsmooth > 0:
+        #smoother = lambda v: smoothed_medianf(v, tsmooth*0.5, tsmooth)
+        tsmoother = lambda v: adaptive_filter_1d(v, smooth=tsmooth, keep_clusters=True)
+    if ssmooth > 0:
+        ssmoother = lambda v: adaptive_filter_2d(v.reshape(patch_ssize,-1),smooth=ssmooth,keep_clusters=True).reshape(v.shape)
+
+    #print('Splitting to patches and doing SVD decompositions',flush=True)
+    for sq in tqdm(squares,desc='Splitting to patches and doing SVD'):
+
+        patch_frames = d[sq]
+        L = len(patch_frames)
+        w_sh = patch_frames.shape
+
+        #print(sq, w_sh, L)
+
+        patch = patch_frames.reshape(L,-1) # now each column is signal in one pixel
+        patch_c = np.mean(patch,0)
+        patch = patch - patch_c
+
+        u,s,vh = np.linalg.svd(patch.T,full_matrices=False)
+        #rank = min_ncomp(s, patch.shape)+1
+        rank = max(min_ncomps, min_ncomp(s, patch.shape)+1)
+        u,vh = svd_flip_signs(u[:,:rank],vh[:rank])
+
+        w = weight_components(patch.T, vh, rank) if do_pruning else np.ones(u[:,:rank].shape)
+        svd_signals,loadings = vh[:rank], u[:,:rank]*w
+        s = s[:rank]
+        svd_signals = svd_signals*s[:,None]
+
+        if tsmooth > 0:
+            svd_signals = array([tsmoother(v) for v in svd_signals])
+        #W = np.diag(s)@vh
+        W = loadings.T
+        if  (ssmooth > 0) and (patch.shape[1] == patch_ssize**2):
+            W = array([ssmoother(v) for v in W])
+        #print (svd_signals.shape, W.shape, patch.shape)
+        #return
+        acc.append((svd_signals, W, patch_c, sq, w_sh))
+    return acc
+
+def tanh_step(x, window):
+    taper_width=window/5
+    taper_k = taper_width/4
+    return np.clip((1.01 + np.tanh((x-taper_width)/taper_k) * np.tanh((window-x-taper_width)/taper_k))/2,0,1)
+
+## TODO: crossfade for overlapping patches, at least in time
+def project_from_tsvd_patches(collection, shape, with_f0=False, baseline_smoothness=_baseline_smoothness_):
+    """
+    Do inverse transform from local truncated SVD projections (output of `patch_tsvds_from_frames`)
+    Goes through patches, calculates approximations and combines overlapping singal estimates
+
+    Input:
+     - collection of tSVD components along with patch location and shape (see `patch_tsvds_from_frames`)
+     - shape of the full frame stack to reconstruct
+     - with_f0: whether to calculate an estimate of baseline fluorescence level F0
+     - baseline_smoothness: filter width for smoothing to calculate the baseline, has no effect of with_f0 is False
+
+    Output:
+     - if `with_f0` is False, just return the approximation of the fluorescence signal (1 frame stack)
+     - if `with_f0` is True, return estimates of fluorescence and baseline fluorescence (2 frame stacks)
+    """
+    out_data = np.zeros(shape,dtype=_dtype_)
+    if with_f0:
+        out_f0 = np.zeros_like(out_data)
+    #counts = np.zeros(shape[1:], np.int)
+    counts = np.zeros(shape,_dtype_) # candidate for crossfade
+
+    #tslice = (slice(None),)
+    i = 0
+    #print('Doing inverse transform', flush=True)
+    tqdm_desc = 'Doing inverse transform ' +  ('with baseline' if with_f0 else '')
+    for signals,filters,center,sq, w_sh in tqdm(collection, desc=tqdm_desc):
+        L = w_sh[0]
+        crossfade_coefs = tanh_step(arange(L), L).astype(_dtype_)[:,None,None]
+        #crossfade_coefs = np.ones(L)[:,None,None]
+        counts[sq] += crossfade_coefs
+
+        rec = (signals.T@filters).reshape(w_sh)
+        out_data[tuple(sq)] += (rec + center.reshape(w_sh[1:]))*crossfade_coefs
+
+        if with_f0:
+            bs = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in signals])
+            if any(isnan(bs)):
+                print('Nan in ', sq)
+                #return (signals, filters, center,sq,w_sh)
+            rec_b = (bs.T@filters).reshape(w_sh)
+            out_f0[tuple(sq)] += (rec_b + center.reshape(w_sh[1:]))*crossfade_coefs
+
+    out_data /= (1e-12 + counts)
+    out_data *= (counts > 1e-12)
+    if with_f0:
+        out_f0 /= (1e-12 + counts)
+        out_f0 *= (counts > 1e-12)
+        return out_data, out_f0
+    return out_data
+
+# TODO:
+# - [ ] Exponential-family PCA
+# - [ ] Cut svd_signals into pieces before second-stage SVD
+#       - alternatively, look at neighboring patches in time
+# - [X] (***) Cluster svd_signals before SVD
+
+def patch_center(p):
+    "center location of an n-dimensional slice"
+    return array([0.5*(p_.start+p_.stop) for p_ in p])
+
+def _pairwise_euclidean_distances(points):
+    """pairwise euclidean distances between points.
+    Calculated as distance between vectors x and y:
+    d = sqrt(dot(x,x) -2*dot(x,y) + dot(Y,Y))
+    """
+    X = np.asarray(points)
+    XX = np.sum(X*X, axis=1)[:,np.newaxis]
+    D = -2 * np.dot(X,X.T) + XX + XX.T
+    np.maximum(D, 0, D)
+    # todo triangular matrix, sparse matrix
+    return np.sqrt(D)
+
+
+from imfun.cluster import som
+# TODO: decide which clustering algorithm to use.
+#       candidates:
+#         - KMeans (sklearn)
+#         - MiniBatchKMeans (sklearn)
+#         - AgglomerativeClustering with Ward or other linkage (sklearn)
+#         - SOM aka Kohonen (imfun)
+#         - something else?
+#       - clustering algorithm should be made a parameter
+# TODO: good crossfade and smaller overlap
+
+def second_stage_svd(collection, fsh,  n_clusters=_nclusters_, Nhood=100, clustering_algorithm='AgglomerativeWard'):
+    out_signals = [zeros(c[0].shape,_dtype_) for c in collection]
+    out_counts = zeros(len(collection), np.int) # make crossafade here
+    squares = make_grid2(fsh[1:], Nhood, Nhood//2)
+    tstarts = set(c[3][0].start for c in collection)
+    tsquares = [(t, sq) for t in tstarts for sq in squares]
+    clustering_dispatcher = {
+        'AgglomerativeWard'.lower(): lambda nclust : skcluster.AgglomerativeClustering(nclust),
+        'KMeans'.lower() : lambda nclust: skcluster.KMeans(nclust),
+        'MiniBatchKMeans'.lower(): lambda nclust: skcluster.MiniBatchKMeans(nclust, batch_size)
+    }
+    def _is_local_patch(p, sqx):
+        t0, sq = sqx
+        tstart = p[0].start
+        psq = p[1:]
+        return (tstart==t0) & (slice_overlaps_square(psq, sq))
+    for sqx in tqdm(tsquares, desc='Going through larger squares'):
+        #print(sqx, collection[0][3], slice_starts_in_square(collection[0][3], sqx))
+        signals = [c[0] for c in collection if _is_local_patch(c[3], sqx)]
+        if not(len(signals)):
+            print(sqx)
+            for c in collection:
+                print(sqx, c[3], _is_local_patch(c[3], sqx))
+        nclust = min(n_clusters, len(signals))
+        signals = vstack(signals)
+        #clust=skcluster.KMeans(min(n_clusters,len(signals)))
+        #clust = skcluster.AgglomerativeClustering(min(n_clusters,len(signals)))
+        # number of signals can be different in some patches due to boundary conditions
+        clust = clustering_dispatcher[clustering_algorithm.lower()](nclust)
+        if clustering_algorithm == "MiniBatchKMeans".lower():
+            clust.batch_size  = min(clust.batch_size, len(signals))
+        labels = clust.fit_predict(signals)
+        sqx_approx = np.zeros(signals.shape, _dtype_)
+        for i in unique(labels):
+            group = labels==i
+            u,s,vh = svd(signals[group],False)
+            r = min_ncomp(s, (u.shape[0],vh.shape[1]))+1
+            #w = weight_components(all_svd_signals[group],vh,r)
+            approx = u[:,:r]@diag(s[:r])@vh[:r]
+            sqx_approx[group] = approx
+        kstart=0
+        for i,c in enumerate(collection):
+            if _is_local_patch(c[3], sqx):
+                l =len(c[0])
+                out_signals[i] += sqx_approx[kstart:kstart+l]
+                out_counts[i] += 1
+                kstart+=l
+    return [(x/(1e-7+cnt),) +  c[1:] for c,x,cnt in zip(collection, out_signals, out_counts)]
+
+
+import pickle
+def patch_svd_denoise_frames(frames,with_f0=False, do_second_stage=False, save_coll=None,
+                             n_clusters=_nclusters_, clustering_algorithm='AgglomerativeWard',
+                             baseline_smoothness=_baseline_smoothness_,
+                             **kwargs):
+    """
+    Split frame stack into overlapping windows (patches), do truncated SVD projection of each patch, optionally improve
+    temporal components by clustering and another SVD in larger windows, and finally merge inverse transforms of each patch.
+
+    Input:
+     - frames: TXY stack of frames to denoise
+     - with_f0: whether to estimate smooth baseline fluorescence
+     - do_second_stage: whether to do the clustering/secondary SVD on temporal compoments
+     - n_clusters: how many clusters to use  at the second stage SVD
+     - **kwargs: arguments to pass to `patch_tsvds_from_frames`
+
+    Output:
+     - denoised fluorescence or fluorescence and baseline
+    """
+    coll = patch_tsvds_from_frames(frames, **kwargs)
+    if do_second_stage:
+        coll = second_stage_svd(coll, frames.shape,n_clusters=n_clusters, clustering_algorithm='AgglomerativeWard')
+    if save_coll is not None:
+        with gzip.open(save_coll, 'wb') as fh:
+            pickle.dump((coll,frames.shape), fh)
+    return project_from_tsvd_patches(coll, frames.shape, with_f0, baseline_smoothness=baseline_smoothness)
+
+
+
+# TODO: may be scrambled data are the best for robust gain,offset estimates???
+
+def scramble_data(frames):
+    """Randomly permute (shuffle) signals in each pixel independenly
+    useful for quick creation of surrogate data with zero acitvity, only noise
+    - TODO: clip some too high values
+    """
+    L,nr,nc = frames.shape
+    out = np.zeros_like(frames)
+    for r in range(nr):
+        for c in range(nc):
+            out[:,r,c] = np.random.permutation(frames[:,r,c])
+    return out
+
+def scramble_data_local_jitter(frames,w=10):
+    """Randomly permute (shuffle) signals in each pixel independenly
+    useful for quick creation of surrogate data with zero acitvity, only noise
+    - TODO: clip some too high values
+    """
+    L,nr,nc = frames.shape
+    out = np.zeros_like(frames)
+    for r in range(nr):
+        for c in range(nc):
+            out[:,r,c] = local_jitter(frames[:,r,c], w)
+    return out
+
+from matplotlib import animation
+from skimage.feature import peak_local_max
+from scipy import ndimage
+
+def make_denoising_animation(frames, yhat,f0,  movie_name, start_loc=None,path=None):
+    figh = plt.figure(figsize=(10,10))
+    axleft = plt.subplot2grid((2,2), (0,0))
+    axright = plt.subplot2grid((2,2), (0,1))
+
+    L = len(frames)
+
+    for ax in (axleft,axright):
+        plt.setp(ax,xticks=[],yticks=[])
+    axbottom = plt.subplot2grid((2,2), (1,0),colspan=2)
+    fsh = frames[0].shape
+
+
+    if (start_loc is None) :
+        f = ndimage.gaussian_filter(np.max(yhat-f0,0),3)
+        k = argmax(ravel(f))
+        nrows,ncols = frames[0].shape
+        loc = (k//ncols, k%ncols )
+    else:
+        loc = start_loc
+
+    axleft.set_title('Raw (x10 speed)',size=14)
+    axright.set_title('Denoised (x10 speed)',size=14)
+    axbottom.set_title('Signals at point',size=14)
+    low,high = np.percentile(yhat, (0.5, 99.5))
+    low,high = 0.9*low,1.1*high
+    h1 = axleft.imshow(frames[0],clim=(low,high),cmap='gray',animated=True)
+    h2 = axright.imshow(yhat[0],clim=(low,high),cmap='gray',animated=True)
+    axbottom.set_ylim(yhat.min(), yhat.max())
+    plt.tight_layout()
+
+    lhc = axright.axvline(loc[1], color='y',lw=1)
+    lhr = axright.axhline(loc[0], color='y',lw=1)
+    lhb = axbottom.axvline(0,color='y',lw=1)
+    if path is None:
+        locs = (loc + np.cumsum([(0,0)] + [np.random.randint(-1,2,size=2)*0.5+(1.25,1.25)
+                                           for i in range(L)],axis=0)).astype(int)
+    else:
+        locs = []
+        current_loc = array(start_loc)
+        apath = asarray(path)
+        keypoints = apath[:,2]
+        for kf in range(L):
+            ktarget = argmax(keypoints>=kf)
+            target = apath[ktarget,:2][::-1] # switch from xy to rc
+            kft = keypoints[ktarget]
+            #print(target, current_loc)
+            if kft == kf:
+                v = 0
+            else:
+                v = (target-current_loc)#/(ktarget-kf)
+                #vl = norm(v)
+                v = v/(kft-kf)
+
+            current_loc = current_loc + v
+            locs.append(current_loc.copy())
+
+    loc = locs[0].astype(int)
+    xsl = (slice(None), loc[0], loc[1])
+    lraw = axbottom.plot(frames[xsl], color='gray',label='Fraw')[0]#,animated=True)
+    ly = axbottom.plot(yhat[xsl], color='royalblue',label=r'$\hat F$')[0]#,animated=True)
+    lb = axbottom.plot(f0[xsl], color=(0.2,0.8,0.5),lw=2,label='F0')[0]#,animated=True)
+
+    axbottom.legend(loc='upper right')
+    nrows,ncols = fsh
+
+    nn = np.concatenate([np.diag(ones(2,np.int)),-np.diag(ones(2,np.int))])
+
+    loc = [loc]
+    def _animate(frame_ind):
+        #loc += randint(-1,2,size=2)
+
+        #loc = locs[frame_ind]
+
+        #f = ndimage.gaussian_filter(yhat[frame_ind]/f0[frame_ind],3)
+        #lmx = peak_local_max(f)
+        #labels, nlab = ndi.label(lmx)
+        #objs = ndi.find_objects(labels)
+        #peak = argmax([f[o].mean() for o in objs])
+        #loc =  [(oi.start+oi.stop)/2 for oi in objs[peak]]
+
+        #f = ndimage.gaussian_filter(yhat[frame_ind],3)
+        #k = argmax([f[n[0]] for n in loc[0]+nn])
+        #k = argmax(ravel(f))
+        #loc[0] = (k//ncols, k%ncols )
+        #loc[0] = loc[0] + nn[k]
+        loc[0] = locs[frame_ind]
+        loc[0] = asarray((loc[0][0]%nrows,loc[0][1]%ncols),np.int)
+        xsl = (slice(None), loc[0][0], loc[0][1])
+        h1.set_data(frames[frame_ind])
+        h2.set_data(yhat[frame_ind])
+        lraw.set_ydata(frames[xsl])
+        ly.set_ydata(yhat[xsl])
+        lb.set_ydata(f0[xsl])
+        lhc.set_xdata(loc[0][1])
+        lhr.set_ydata(loc[0][0])
+        lhb.set_xdata(frame_ind)
+        return [h1,h2,lraw,ly,lb,lhc,lhr]
+    anim = animation.FuncAnimation(figh, _animate, frames=int(L), blit=True)
+    Writer = animation.writers.avail['ffmpeg']
+    w = Writer(fps=10,codec='libx264',bitrate=16000)
+    anim.save(movie_name)
+    return locs

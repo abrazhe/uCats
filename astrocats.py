@@ -73,7 +73,7 @@ def main():
         '--with-motion-movies': dict(action='store_true'),
         '--with-detection-movies': dict(action='store_true'),
         '--suff': dict(default='', help="optional suffix to append to saved registration recipe"),
-        '--fps': dict(default=25,type=float,help='fps of exported movie'),
+        '--fps': dict(default=10,type=float,help='fps of exported movie'),
         '--motion-with-adaptive_filter': dict(action='store_true'),
         '--motion-with-pca-denoise': dict(action='store_true'),
         '--codec': dict(default='libx264', help='movie codec'),
@@ -184,6 +184,7 @@ def process_lif_file(fname, args,min_frames=600):
 #     dfc =  (df**2 + 2*df*b)/4
 #     return dfc, bc
 
+from tqdm import tqdm
 def process_record(fs, fname, series, args):
     nametag = '-'.join((fname,series,args.suff))
     print('nametag is:', nametag)
@@ -197,19 +198,27 @@ def process_record(fs, fname, series, args):
     if args.no_events:
         return
 
-    # I. -- Adaptive median filtering input data --
+    # I. -- Correcting for gain and offset --
     frames = fsc.data.astype(float32)
-    if args.detection_do_adaptive_median_filter:
-        print("Performing adaptive median filtering of the raw fluorescence signal")
-        frames = ucats.adaptive_median_filter(fsc.data.astype(float32),
-                                              th=5, tsmooth=1, ssmooth=5)
-        frames = frames.astype(float32)
-    else:
-        frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
+    gain_est,offset_est = ucats.estimate_gain_and_offset(frames,20,ntries=200,npatches=int(1e5),
+                                                         with_plot=True,save_to=nametag+'-gain-offset.png')
+    frames_x = (frames - offset_est)/gain_est
+    frames_x[frames_x<0] = 0
+    fsc_x = fseq.from_array(frames_x)
+
+    np.save(nametag+'-gain-offset.npy', np.array((gain_est,offset_est)))
+    # I.a -- Adaptive median filtering input data --
+    # if args.detection_do_adaptive_median_filter:
+    #     print("Performing adaptive median filtering of the raw fluorescence signal")
+    #     frames = ucats.adaptive_median_filter(fsc.data.astype(float32),
+    #                                           th=5, tsmooth=1, ssmooth=5)
+    #     frames = frames.astype(float32)
+    # else:
+    #     frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
 
 
     # II. Process data
-    benh = None
+    F0 = None
     detected_name = nametag+'-detected.h5'
     baseline_name = nametag+'-baseline.pickle'
     if os.path.exists(detected_name):
@@ -219,29 +228,31 @@ def process_record(fs, fname, series, args):
         print('loading existing results of event detection:', detected_name)
         if os.path.exists(baseline_name):
             print('loading existing fluorescence baseline frames')
-            benh = ucats.load_baseline_pickle(baseline_name)
+            F0 = ucats.load_baseline_pickle(baseline_name)
         else:
             print('calculating baseline fluorescence')
-            #benh = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
-            _, benh = ucats.block_svd_denoise_and_separate(frames, nhood=16, stride=16, min_comps=3,
+            #F0 = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
+            _, F0 = ucats.block_svd_denoise_and_separate(frames_x, nhood=16, stride=16, min_comps=3,
                                                            baseline_smoothness=args.baseline_smoothness,
                                                            spatial_filter=3,
                                                            correct_spatial_components=False,
                                                            with_clusters=False)
             print('storing baseline fluorescence estimate')
-            ucats.store_baseline_pickle(baseline_name,benh)
+            ucats.store_baseline_pickle(baseline_name,F0)
 
-        benh = fseq.from_array(benh)
-        benh.meta['channel'] = 'Fbaseline'
+        F0 = fseq.from_array(F0)
+        F0.meta['channel'] = 'F0'
+        frec=F0.data
 
     else:
         print('Denoising frames and separating background via block-SVD in sqrt-ed data')
         #todo: take parameters from arguments to the script
-        print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/args.detection_temporal_window)-1))
-        if args.detection_do_variance_stabilization:
-            xt = 2*np.sqrt(frames)
-        else:
-            xt = frames
+        #print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/args.detection_temporal_window)-1))
+        #if args.detection_do_variance_stabilization:
+        #    xt = ucats.Anscombe.transform(frames_x)
+        #else:
+        #    xt = frames_x
+        xt = ucats.Anscombe.transform(frames_x)
         _process_kwargs = dict(nhood=args.detection_loc_nhood,
                                stride=args.detection_loc_stride,
                                spatial_filter=args.detection_spatial_filter,
@@ -251,97 +262,119 @@ def process_record(fs, fname, series, args):
                                baseline_smoothness=args.baseline_smoothness,
                                spatial_min_cluster_size=5)
         #fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
-        fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+        #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+        _process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
+        D_t,F0_t = ucats.patch_svd_denoise_frames(xt,  with_f0=True,
+                                                  do_second_stage=True,
+                                                  save_coll=nametag+'-coll2.pz',
+                                                  **_process_kwargs)
+        D_t = np.clip(D_t, 2*np.sqrt(3/8), np.max(D_t))
+        F0_t = np.clip(F0_t, 2*np.sqrt(3/8), np.max(F0_t))
+        F0, frec = (ucats.Anscombe.inverse_transform(ucats.adaptive_median_filter(x)) for x in (F0_t, D_t))
+        frec[frec<0] = 0
+        dfosd = ucats.to_zscore_frames(D_t-F0_t)
+        dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
+        df_signals = dfosd.reshape(len(F0),-1).T
+        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=2.5)
+                           for v in tqdm(df_signals)]).T.reshape(F0_t.shape)
+        labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
+        labels = ucats.refine_mask_by_median_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=25)
 
         # III. Calculate ΔF/F
-        print('Calculating relative fluorescence changes')
-        th1 = ucats.percentile_th_frames(fdelta,2.0)
-        print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
-        print('Fbase  dynamic range:', fb.min(), fb.max())
-        print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
-        correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
-        print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
+        #print('Calculating relative fluorescence changes')
+        #th1 = ucats.percentile_th_frames(fdelta,2.0)
+        #print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
+        #print('Fbase  dynamic range:', fb.min(), fb.max())
+        #print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
+        #correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
+        #print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
         #if any(np.isnan(correction_bias)):
         #    correction_bias = np.zeros(correction_bias.shape)
-        correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
-        fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
-        if args.detection_do_variance_stabilization:
-            frames_dn,benh = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
-        else:
-            frames_dn, benh = fdelta, fb
+        #correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
+        #fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
+
+        #frec = ucats.adaptive_median_filter(frec)
+        dFoF = ucats.adaptive_median_filter(frec/F0-1)
+        dFoFx = dFoF*labels
+        del labels, labels2, D_t, F0_t
+
+        #if args.detection_do_variance_stabilization:
+        #    frames_dn,F0 = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
+        #else:
+        #    frames_dn, F0 = fdelta, fb
         print('storing baseline fluorescence estimate')
-        ucats.store_baseline_pickle(baseline_name,benh)
+        ucats.store_baseline_pickle(baseline_name,F0)
 
         #nsdt = ucats.std_median(fdelta,axis=0)
-        mask_pipeline = lambda m: ucats.threshold_object_size(ucats.refine_mask_by_median_filter(m,niter=3),9)
-        mask1 = fdelta >= th1
-        mask2 = frames_dn/benh >= 0.01 # 1% change from baseline
-        mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
+        #mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
+        #mask1 = fdelta >= th1
+        #mask2 = frames_dn/F0 >= 0.01 # 1% change from baseline
+        #mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
         #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
-        frames_dn *= mask_final
-        dfofx = frames_dn/benh
-        dfofx[np.abs(benh)<1e-5] = 0
-        print('Baseline dynamic range:', np.min(benh), np.max(benh))
-        #benh =  0.25*fb**2
+        #frames_dn *= mask_final
+        #dfofx = frames_dn/F0
+        dFoF[np.abs(F0)<1e-5] = 0
+        print('Baseline dynamic range:', np.min(F0), np.max(F0))
+        #F0 =  0.25*fb**2
         #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
-        del fb, fdelta,mask_final
+        #del fb, fdelta,mask_final
 
-        coll_ = ucats.EventCollection(dfofx,
+        coll_ = ucats.EventCollection(dFoFx,
                                       threshold=args.event_segmentation_threshold,
                                       min_area=args.event_min_area,
                                       min_duration=args.event_min_duration,
                                       peak_threshold=args.event_peak_threshold)
-        dfofx = dfofx*(coll_.to_filtered_array()>0)
+        dFoFx = dFoFx*(coll_.to_filtered_array()>0)
+        channel_name = 'newrec9'
+        # if args.detection_do_second_pass:
+        #     print('Doing second pass...')
+        #     dfof = (frames/F0).astype(float32)  - 1
+        #     diff = dfof - dfofx
+        #     mindiff = min(0, np.min(diff))
+        #
+        #     if args.detection_do_variance_stabilization:
+        #         diff = 2*np.sqrt(diff - mindiff)
+        #
+        #     fcorr, b2 = ucats.block_svd_denoise_and_separate(diff, stride=2,nhood=5,baseline_smoothness=150)
+        #
+        #     if args.detection_do_variance_stabilization:
+        #         offset = 2*(-mindiff)**0.5 if mindiff < 0 else 0
+        #         fcorr,b2 = ucats.convert_from_varstab(fcorr, b2 + offset)
+        #
+        #     dfofx2 = dfofx + fcorr
+        #
+        #     coll_ = ucats.EventCollection(dfofx2,
+        #                                   threshold=args.event_segmentation_threshold,
+        #                                   min_area=args.event_min_area,
+        #                                   min_duration=args.event_min_duration,
+        #                                   peak_threshold=args.event_peak_threshold)
+        #     dfofx2 = dfofx2*(             coll_.to_filtered_array()>0)
+        #
+        #     mx = ucats.select_overlapping(dfofx2>=0.025,dfofx[:]>=0.01)
+        #     dfofx2[~mx] = 0
+        #     channel_name = 'newrec8a'
+        # else:
+        #     dfofx2 = dfofx
+        #     channel_name = 'newrec8'
 
-        if args.detection_do_second_pass:
-            print('Doing second pass...')
-            dfof = (frames/benh).astype(float32)  - 1
-            diff = dfof - dfofx
-            mindiff = min(0, np.min(diff))
-
-            if args.detection_do_variance_stabilization:
-                diff = 2*np.sqrt(diff - mindiff)
-
-            fcorr, b2 = ucats.block_svd_denoise_and_separate(diff, stride=2,nhood=5,baseline_smoothness=150)
-
-            if args.detection_do_variance_stabilization:
-                offset = 2*(-mindiff)**0.5 if mindiff < 0 else 0
-                fcorr,b2 = ucats.convert_from_varstab(fcorr, b2 + offset)
-
-            dfofx2 = dfofx + fcorr
-
-            coll_ = ucats.EventCollection(dfofx2,
-                                          threshold=args.event_segmentation_threshold,
-                                          min_area=args.event_min_area,
-                                          min_duration=args.event_min_duration,
-                                          peak_threshold=args.event_peak_threshold)
-            dfofx2 = dfofx2*(             coll_.to_filtered_array()>0)
-
-            mx = ucats.select_overlapping(dfofx2>=0.025,dfofx[:]>=0.01)
-            dfofx2[~mx] = 0
-            channel_name = 'newrec8a'
-        else:
-            dfofx2 = dfofx
-            channel_name = 'newrec8'
-
-        benh = fseq.from_array(benh)
-        benh.meta['channel'] = 'Fbaseline'
+        F0 = fseq.from_array(F0)
+        F0.meta['channel'] = 'F0'
 
         #if args.no_skip_dark_areas:
         #    print('calculating well-stained and poorly-stained areas')
-        #    colored_mask = dark_area_mask(benh.data.mean(0))
+        #    colored_mask = dark_area_mask(F0.data.mean(0))
         #else:
         #    print('no color mask asked for')
-        #    colored_mask = np.ones(benh[0].shape, np.bool)
+        #    colored_mask = np.ones(F0[0].shape, np.bool)
 
         #f,ax = plt.subplots(1,1,figsize=(8,8));
-        #ax.imshow(benh.data.mean(0),cmap='gray')
+        #ax.imshow(F0.data.mean(0),cmap='gray')
         #ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
         #plt.tight_layout()
         #f.savefig(nametag+'-colored_mask.png')
         #plt.close(f)
-        fsx = fseq.from_array(dfofx2)
+        fsx = fseq.from_array(dFoFx)
         fsx.meta['channel'] = channel_name
 
         #meta = fsx.meta
@@ -356,12 +389,13 @@ def process_record(fs, fname, series, args):
     # VI.  Make movies
     if args.verbose: print('Making movies of detected activity')
     #fsout = fseq.FStackColl([fsc,  fsx])
-    #frames_out = benh.data*(asarray(fsx.data,float32)+1)
-    frames_out = benh.data
-    #frames_out = benh.data*(dfof_cleaned + 1)
-    fsout = fseq.FStackColl([benh,  fsx])
+    #frames_out = F0.data*(asarray(fsx.data,float32)+1)
+    #frames_out = F0.data
+    frames_out=frec
+    #frames_out = F0.data*(dfof_cleaned + 1)
+    fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])
     p = ui.Picker(fsout); p.start()
-    p0 = ui.Picker(fseq.FStackColl([fsc]))
+    p0 = ui.Picker(fseq.FStackColl([fsc_x]))
     p0._ccmap=dict(b=None,i=None,r=None,g=0)
     bgclim = np.percentile(frames_out,(1,99))
     bgclim[1] *= 1.25
@@ -374,12 +408,13 @@ def process_record(fs, fname, series, args):
     p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
     ui.pickers_to_movie([p0, p],nametag+'-b-detected.mp4', titles=('raw','processed'),
+                        fps=args.fps,
                         codec=args.codec,
                         bitrate=args.bitrate,
                         writer=args.writer)
 
     print('segmenting and animating events')
-    events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc.data/benh.data-1)
+    events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc_x.data/F0.data-1)
     if len(events.filtered_coll):
         events.to_csv(nametag+'-events.csv')
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
