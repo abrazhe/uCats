@@ -425,7 +425,10 @@ def cleanup_cluster_map(m,niter=1):
                 neighbors = array([m[(r+1),c], m[(r-1),c],  m[r,(c+1)],  m[r,(c-1)]])
                 if not np.any(neighbors==me):
                     neighbors = neighbors[neighbors>cval]
-                    m[r,c] = neighbors[np.random.randint(len(neighbors))]
+                    if len(neighbors):
+                        m[r,c] = neighbors[np.random.randint(len(neighbors))]
+                    else:
+                        m[r,c] = cval
     return m[1:-1,1:-1]
 
 
@@ -653,11 +656,7 @@ def points2mask(points,sh):
 
 def mask2points(mask):
     "mask to a list of points, as row,col"
-    points = []
-    for loc in locations(mask.shape):
-        if mask[loc]:
-            points.append(loc)
-    return points
+    return  np.array([loc for loc in locations(mask.shape) if mask[loc]])
 
 from imfun import cluster
 def cleanup_mask(m, eps=3, min_pts=5):
@@ -1006,7 +1005,8 @@ def opening_of_closing(m):
 def to_zscore_frames(frames):
     nsm = mad_std(frames, axis=0)
     biases = find_bias_frames(frames, 3, nsm)
-    return np.where(nsm>1e-5,(frames-biases)/nsm,0)
+
+    return np.where(nsm>1e-5,(frames-biases)/(nsm+1e-5),0)
 
 
 def activity_mask_median_filtering(frames, nw=11, th=1.0, plow=2.5, smooth=2.5,
@@ -1495,13 +1495,23 @@ def mad_std(v,axis=None):
     mad = np.median(abs(v-np.median(v,axis=axis)),axis=axis)
     return mad*1.4826
 
+def iterative_noise_sd(data, cut=5, axis=None, niter=10):
+    data = np.copy(data)
+    for i in range(niter):
+        sd = np.std(data, axis=axis)
+        mu = np.mean(data, axis=axis)
+        outliers = np.abs(data-mu) > cut*sd
+        data = where(outliers, data*0.5, data)
+        #data[outliers] = cut*sd
+    return sd
+
 def closing_of_opening(m,s=None):
     return ndi.binary_closing(ndi.binary_opening(m,s),s)
 
-def refine_mask_by_median_filter(m, size=3,niter=1,with_cleanup=False,min_obj_size=2):
-    out = np.copy(m)
+def refine_mask_by_percentile_filter(m, p=50, size=3,niter=1,with_cleanup=False,min_obj_size=2):
+    out = np.copy(m).astype(bool)
     for i in range(niter):
-        out += ndi.median_filter(out,size)
+        out += ndi.percentile_filter(out,p,size).astype(bool)
         if with_cleanup:
             out = threshold_object_size(out, min_obj_size)
     return out
@@ -2599,16 +2609,29 @@ def extract_random_cubic_patch(frames, w=10):
     sl =  tuple(slice(j, j+w) for j in starts)
     return frames[sl]
 
+def extract_random_column(frames, w=10):
+    if not np.iterable(w):
+        w = (w,)*np.ndim(frames)
+    sh = frames.shape
+    loc = tuple(randint(0,s-wi,) for s,wi in zip(sh,w))
+    sl = tuple(slice(j,j+wi) for j,wi in zip(loc, w))
+    #print(loc, sl)
+    return frames[sl]
+
+
 
 def _simple_stats(x):
     "Just return mean and variance of a sample"
     return (x.mean(), x.var())
+    #mu = x.mean()
+    #sigmasq = np.var(x[np.abs(x-mu)<3*np.std(x)])
+    #return mu, sigmasq
 
 from sklearn import linear_model
 
 # TODO: eventually move to μCats
-def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
-                             ntries=100,
+def estimate_gain_and_offset(frames, patch_width=10,npatches=int(1e5),
+                             ntries=200,
                              with_plot=False,save_to=None,
                              return_type='mean'):
     """
@@ -2627,20 +2650,21 @@ def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
      - return_type: {'mean','min','median','ransac'} -- which estimate of the line fit to return
     """
 
-    pxr = array([_simple_stats(extract_random_cubic_patch(frames,patch_width)) for i in range(npatches)])
-
-    pxr = pxr[pxr[:,0]<np.percentile(pxr[:,0],95)]
+    pxr = array([_simple_stats(extract_random_column(frames,patch_width)) for i in range(npatches)])
+    cut = np.percentile(pxr[:,0],95)
+    pxr = pxr[pxr[:,0]<cut]
     vm,vv=pxr.T
 
     gains = np.zeros(ntries, _dtype_)
     offsets = np.zeros(ntries,_dtype_)
 
     for i in range(ntries):
-        vmx,vvx = np.random.permutation(pxr)[:npatches//10].T
-        regressor = linear_model.RANSACRegressor()
-        regressor.fit(vmx[:,None], vvx)
-        re = regressor.estimator_
-        gain, intercept = re.coef_, re.intercept_
+        vmx,vvx = np.random.permutation(pxr,)[:npatches//10].T
+        p = np.polyfit(vmx,vvx,1)
+        #regressor = linear_model.RANSACRegressor()
+        #regressor.fit(vmx[:,None], vvx)
+        #re = regressor.estimator_
+        gain, intercept = p
         offset = -intercept/gain
         gains[i] = gain
         offsets[i] = offset
@@ -2660,6 +2684,8 @@ def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
 
     print('RANSAC: Estimated gain %1.2f and offset %1.2f'%(results['ransac']))
     print('ML: Estimated gain %1.2f and offset %1.2f'%(results['mean']))
+    print('Med: Estimated gain %1.2f and offset %1.2f'%(results['median']))
+
     min_gain, min_offset = amin(gains), amin(offsets)
 
     if with_plot:
@@ -2678,7 +2704,7 @@ def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
             plt.plot(xfit, linefit(gain,offset),ls=lp[0],color=lp[1],label=key+': '+fmt%(gain,offset))
 
         plt.legend(loc='upper left')
-        plt.setp(ax, xlabel='Mean', ylabel='Variance', title='Mean-Variance for small cubic patches')
+        plt.setp(ax, xlabel='Mean', ylabel='Variance', title='Mean-Variance for small patches')
         plt.colorbar(h)
         if save_to is not None:
             f.savefig(save_to)
@@ -2688,7 +2714,7 @@ def estimate_gain_and_offset(frames, patch_width=20,npatches=int(1e5),
 
 def shuffle_signals(m):
     "Given a collection of signals, randomly permute each"
-    return array([permutation(v) for v in m])
+    return array([np.random.permutation(v) for v in m])
 
 def weight_components(data, components, rank=None, Npermutations=100, clip_percentile=95):
     """
@@ -2775,10 +2801,11 @@ def patch_tsvds_from_frames(frames,
     tstride = min(L, tstride)
     squares = make_grid2(frames.shape, (patch_tsize, patch_ssize, patch_ssize), (tstride, sstride, sstride))
     if tsmooth > 0:
+        #print('Will smooth temporal components')
         #smoother = lambda v: smoothed_medianf(v, tsmooth*0.5, tsmooth)
-        tsmoother = lambda v: adaptive_filter_1d(v, smooth=tsmooth, keep_clusters=True)
+        tsmoother = lambda v: adaptive_filter_1d(v, th=3, smooth=tsmooth, keep_clusters=False)
     if ssmooth > 0:
-        ssmoother = lambda v: adaptive_filter_2d(v.reshape(patch_ssize,-1),smooth=ssmooth,keep_clusters=True).reshape(v.shape)
+        ssmoother = lambda v: adaptive_filter_2d(v.reshape(patch_ssize,-1),smooth=ssmooth,keep_clusters=False).reshape(v.shape)
 
     #print('Splitting to patches and doing SVD decompositions',flush=True)
     for sq in tqdm(squares,desc='Splitting to patches and doing SVD'):
@@ -2913,7 +2940,7 @@ def second_stage_svd(collection, fsh,  n_clusters=_nclusters_, Nhood=100, cluste
     clustering_dispatcher = {
         'AgglomerativeWard'.lower(): lambda nclust : skcluster.AgglomerativeClustering(nclust),
         'KMeans'.lower() : lambda nclust: skcluster.KMeans(nclust),
-        'MiniBatchKMeans'.lower(): lambda nclust: skcluster.MiniBatchKMeans(nclust, batch_size)
+        'MiniBatchKMeans'.lower(): lambda nclust: skcluster.MiniBatchKMeans(nclust)
     }
     def _is_local_patch(p, sqx):
         t0, sq = sqx
@@ -2955,10 +2982,8 @@ def second_stage_svd(collection, fsh,  n_clusters=_nclusters_, Nhood=100, cluste
 
 
 import pickle
-def patch_svd_denoise_frames(frames,with_f0=False, do_second_stage=False, save_coll=None,
-                             n_clusters=_nclusters_, clustering_algorithm='AgglomerativeWard',
-                             baseline_smoothness=_baseline_smoothness_,
-                             **kwargs):
+def patch_svd_denoise_frames(frames, do_second_stage=False, save_coll=None,
+                             tsvd_kw=None, second_stage_kw=None,inverse_kw=None):
     """
     Split frame stack into overlapping windows (patches), do truncated SVD projection of each patch, optionally improve
     temporal components by clustering and another SVD in larger windows, and finally merge inverse transforms of each patch.
@@ -2973,13 +2998,13 @@ def patch_svd_denoise_frames(frames,with_f0=False, do_second_stage=False, save_c
     Output:
      - denoised fluorescence or fluorescence and baseline
     """
-    coll = patch_tsvds_from_frames(frames, **kwargs)
+    coll = patch_tsvds_from_frames(frames, **tsvd_kw)
     if do_second_stage:
-        coll = second_stage_svd(coll, frames.shape,n_clusters=n_clusters, clustering_algorithm='AgglomerativeWard')
+        coll = second_stage_svd(coll, frames.shape,**second_stage_kw)
     if save_coll is not None:
         with gzip.open(save_coll, 'wb') as fh:
             pickle.dump((coll,frames.shape), fh)
-    return project_from_tsvd_patches(coll, frames.shape, with_f0, baseline_smoothness=baseline_smoothness)
+    return project_from_tsvd_patches(coll, frames.shape, **inverse_kw)
 
 
 
