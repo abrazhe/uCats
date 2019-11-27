@@ -92,8 +92,10 @@ def main():
         #'--detection-tau-smooth':dict(default=2., type=float,
         #                              help='smoothing in detection, make larger for less false positives,\
         #                              make smaller for detection of smaller events'),
-        '--detection-loc-nhood':dict(default=5,type=int),
-        '--detection-loc-stride':dict(default=2,type=int),
+        '--detection-var-threshold': dict(default=3, type=float,
+                                         help='(tmp) threshold for event detection with new algorithms'),
+        '--detection-loc-patchsize':dict(default=10,type=int),
+        '--detection-loc-stride':dict(default=5,type=int),
         '--detection-use-clusters':dict(default=False, type=bool),
         '--detection-temporal-window':dict(default=600,type=int),
         '--detection-smoothed-reconstruction':dict(default=1,type=bool),
@@ -186,7 +188,7 @@ def process_lif_file(fname, args,min_frames=600):
 
 from tqdm import tqdm
 def process_record(fs, fname, series, args):
-    nametag = '-'.join((fname,series,args.suff))
+    nametag = '-'.join((fname,series,args.suff,'threshold_%1.2f'%args.detection_var_threshold))
     print('nametag is:', nametag)
     h5f  = None
     # II.  Stabilize motion artifacts
@@ -253,19 +255,27 @@ def process_record(fs, fname, series, args):
         #else:
         #    xt = frames_x
         xt = ucats.Anscombe.transform(frames_x)
-        _process_kwargs = dict(nhood=args.detection_loc_nhood,
-                               stride=args.detection_loc_stride,
-                               spatial_filter=args.detection_spatial_filter,
-                               min_comps=args.detection_min_components,
-                               with_clusters = args.detection_use_clusters,
-                               svd_detection_plow = args.detection_low_percentile*2,
-                               baseline_smoothness=args.baseline_smoothness,
-                               spatial_min_cluster_size=5)
+        _process_kwargs = dict(
+            tsvd_kw = dict(ssmooth=3,
+                           tsmooth=5,
+                           sstride=5,
+                           do_pruning=True),
+            second_stage_kw=dict(Nhood=100,clustering_algorithm="MiniBatchKMeans",),
+            inverse_kw=dict(with_f0=True,),
+            do_second_stage=True)
+
+        # args.detection_loc_nhood,
+        #                        stride=args.detection_loc_stride,
+        #                        spatial_filter=args.detection_spatial_filter,
+        #                        min_comps=args.detection_min_components,
+        #                        with_clusters = args.detection_use_clusters,
+        #                        svd_detection_plow = args.detection_low_percentile*2,
+        #                        baseline_smoothness=args.baseline_smoothness,
+        #                        spatial_min_cluster_size=5)
         #fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
         #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
-        _process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
-        D_t,F0_t = ucats.patch_svd_denoise_frames(xt,  with_f0=True,
-                                                  do_second_stage=True,
+        #_process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
+        D_t,F0_t = ucats.patch_svd_denoise_frames(xt,
                                                   save_coll=nametag+'-coll2.pz',
                                                   **_process_kwargs)
         D_t = np.clip(D_t, 2*np.sqrt(3/8), np.max(D_t))
@@ -275,10 +285,12 @@ def process_record(fs, fname, series, args):
         dfosd = ucats.to_zscore_frames(D_t-F0_t)
         dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
         df_signals = dfosd.reshape(len(F0),-1).T
-        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=2.5)
+        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=args.detection_var_threshold)
                            for v in tqdm(df_signals)]).T.reshape(F0_t.shape)
-        labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
-        labels = ucats.refine_mask_by_median_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=25)
+        #labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
+        #labels = ucats.refine_mask_by_percentile_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=10)
+        labels = ucats.refine_mask_by_percentile_filter(labels, niter=5,with_cleanup=True,min_obj_size=10)
+
 
         # III. Calculate ΔF/F
         #print('Calculating relative fluorescence changes')
@@ -296,7 +308,7 @@ def process_record(fs, fname, series, args):
         #frec = ucats.adaptive_median_filter(frec)
         dFoF = ucats.adaptive_median_filter(frec/F0-1)
         dFoFx = dFoF*labels
-        del labels, labels2, D_t, F0_t
+        #del labels, labels2, D_t, F0_t
 
         #if args.detection_do_variance_stabilization:
         #    frames_dn,F0 = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
