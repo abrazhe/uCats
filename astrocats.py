@@ -92,8 +92,8 @@ def main():
         #'--detection-tau-smooth':dict(default=2., type=float,
         #                              help='smoothing in detection, make larger for less false positives,\
         #                              make smaller for detection of smaller events'),
-        '--detection-var-threshold': dict(default=3, type=float,
-                                         help='(tmp) threshold for event detection with new algorithms'),
+        '--detection-var-threshold': dict(default=10, type=float,
+                                         help='(tmp) ̄%ΔF/F threshold for event detection with new algorithms'),
         '--detection-loc-patchsize':dict(default=10,type=int),
         '--detection-loc-stride':dict(default=5,type=int),
         '--detection-use-clusters':dict(default=False, type=bool),
@@ -188,8 +188,11 @@ def process_lif_file(fname, args,min_frames=600):
 
 from tqdm import tqdm
 def process_record(fs, fname, series, args):
-    nametag = '-'.join((fname,series,args.suff,'threshold_%1.2f'%args.detection_var_threshold))
+    #nametag = '-'.join((fname,series,args.suff,'threshold_%1.2f'%args.detection_var_threshold))
+    nametag = '-'.join((fname,series,args.suff))
+    threshold_tag = '-threshold_%1.2f'%args.detection_var_threshold
     print('nametag is:', nametag)
+    print('threshold tag is:', threshold_tag)
     h5f  = None
     # II.  Stabilize motion artifacts
     fsc,_ = stabilize_motion(fs, args,nametag)
@@ -221,9 +224,9 @@ def process_record(fs, fname, series, args):
 
     # II. Process data
     F0 = None
-    detected_name = nametag+'-detected.h5'
+    detected_name = nametag + threshold_tag +'-detected.h5'
     baseline_name = nametag+'-baseline.pickle'
-    if os.path.exists(detected_name):
+    if False and (os.path.exists(detected_name)):
         #h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
@@ -282,10 +285,11 @@ def process_record(fs, fname, series, args):
         F0_t = np.clip(F0_t, 2*np.sqrt(3/8), np.max(F0_t))
         F0, frec = (ucats.Anscombe.inverse_transform(ucats.adaptive_median_filter(x)) for x in (F0_t, D_t))
         frec[frec<0] = 0
-        dfosd = ucats.to_zscore_frames(D_t-F0_t)
-        dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
-        df_signals = dfosd.reshape(len(F0),-1).T
-        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=args.detection_var_threshold)
+        #dfosd = ucats.to_zscore_frames(D_t-F0_t)
+        dfof = (frec/F0 - 1)*(F0 > 0.05)
+        #dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
+        df_signals = dfof.reshape(len(F0),-1).T
+        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=args.detection_var_threshold/100)
                            for v in tqdm(df_signals)]).T.reshape(F0_t.shape)
         #labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
         #labels = ucats.refine_mask_by_percentile_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=10)
@@ -419,7 +423,7 @@ def process_record(fs, fname, series, args):
     print('Testing clims: ',p.clims[1])
     p._ccmap = dict(b=None,i=None,r=1,g=0)
     #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
-    ui.pickers_to_movie([p0, p],nametag+'-b-detected.mp4', titles=('raw','processed'),
+    ui.pickers_to_movie([p0, p],nametag+threshold_tag+'-b-detected.mp4', titles=('raw','processed'),
                         fps=args.fps,
                         codec=args.codec,
                         bitrate=args.bitrate,
@@ -428,9 +432,9 @@ def process_record(fs, fname, series, args):
     print('segmenting and animating events')
     events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc_x.data/F0.data-1)
     if len(events.filtered_coll):
-        events.to_csv(nametag+'-events.csv')
+        events.to_csv(nametag+threshold_tag+'-events.csv')
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
-    animate_events(frames_out, events,args, nametag+'-c-events.mp4')
+    animate_events(frames_out, events,args, nametag+threshold_tag+'-c-events.mp4')
     print('All done')
     if h5f:
         h5f.close()
