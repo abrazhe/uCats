@@ -2629,6 +2629,36 @@ def _simple_stats(x):
 
 from sklearn import linear_model
 
+from imfun.core import extrema
+def estimate_offset2(frames, smooth=None,nsteps=100,with_plot=False):
+    mu = np.median(frames)
+    sigma = np.std(concatenate((frames[frames<=mu], mu-frames[frames<=mu])))
+    print('mu', mu, 'sigma', sigma)
+    biases = np.linspace(mu-sigma/4, mu+sigma/4, nsteps)
+    db = biases[1]-biases[0]
+    v = array([np.mean(frames<n) for n in biases])
+    if smooth is not None:
+        dv = ndi.gaussian_filter1d(v, smooth, order=1)
+        offset = biases[argmax(dv)]
+    else:
+        for smooth in arange(0.1*db,100*db,0.5*db):
+            dv = ndi.gaussian_filter1d(v, smooth, order=1)
+            peaks = extrema.locextr(dv,x=biases,output='max')
+            if len(peaks) < 1:
+                continue
+            offset = peaks[0][0]
+            if len(peaks) <= 1:
+                break
+        if not len(peaks):
+            offset = biases[argmax(dv)]
+    if with_plot:
+        plt.figure()
+        plt.plot(biases, v, '.-')
+        plt.plot(biases, (dv-dv.min())/(dv.max()-dv.min()+1e-7))
+        plt.axvline(offset, color='r',ls='--')
+
+    return offset
+
 # TODO: eventually move to μCats
 def estimate_gain_and_offset(frames, patch_width=10,npatches=int(1e5),
                              ntries=200,
@@ -2691,21 +2721,28 @@ def estimate_gain_and_offset(frames, patch_width=10,npatches=int(1e5),
     if with_plot:
         fmt = ' (%1.2f, %1.2f)'
 
-        f,ax = plt.subplots(1,1)
-        h = ax.hexbin(vm, vv, bins='log',cmap='viridis',mincnt=5)
+        f,axs = plt.subplots(1,3, figsize=(12,4),gridspec_kw=dict(width_ratios=(2,1,1)))
+        h = axs[0].hexbin(vm, vv, bins='log',cmap='viridis',mincnt=5)
         xlow,xhigh = vm.min(), percentile(vm,99)
         ylow,yhigh = vv.min(), percentile(vv,99)
         xfit = np.linspace(vm.min(),xhigh)
         linefit = lambda gain,offset: gain*(xfit-offset)
-        plt.axis((xlow,xhigh,ylow,yhigh))
+        axs[0].axis((xlow,xhigh,ylow,yhigh))
         line_fmts = [('--','skyblue'), ('-','g'), ('--','m')]
+        hist_kw = dict(density=True, bins=25, color='slategray')
+        axs[1].hist(gains,  **hist_kw)
+        axs[2].hist(offsets,  **hist_kw)
+        plt.setp(axs[1], title='Gains')
+        plt.setp(axs[2], title='Offsets')
         for key, lp in zip(('min','mean','ransac'), line_fmts):
             gain,offset = results[key]
-            plt.plot(xfit, linefit(gain,offset),ls=lp[0],color=lp[1],label=key+': '+fmt%(gain,offset))
+            axs[0].plot(xfit, linefit(gain,offset),ls=lp[0],color=lp[1],label=key+': '+fmt%(gain,offset))
+            axs[1].axvline(gain,color=lp[1],ls=lp[0])
+            axs[2].axvline(offset,color=lp[1],ls=lp[0])
 
-        plt.legend(loc='upper left')
-        plt.setp(ax, xlabel='Mean', ylabel='Variance', title='Mean-Variance for small patches')
-        plt.colorbar(h)
+        axs[0].legend(loc='upper left')
+        plt.setp(axs[0], xlabel='Mean', ylabel='Variance', title='Mean-Variance for small patches')
+        plt.colorbar(h,ax=axs[0])
         if save_to is not None:
             f.savefig(save_to)
     return results[return_type]
@@ -2768,6 +2805,23 @@ def make_grid2(shape,sizes,strides):
                             for (dim,size,stride) in zip(shape,sizes,strides)])
     squares = tuple(tuple(slice(a,a+size) for a,size in zip(o,sizes)) for o in origins)
     return squares
+
+# class LNL_SVD_denoise:
+#     def __init__(patch_ssize=10,
+#                  patch_tsize=600,
+#                  sstride=2,
+#                  tstride=300,
+#                  min_ncomps=1):
+#         return
+#
+#     def fit_local(self, frames):
+#
+#         return
+#
+#     def fit_nonlocal(self):
+#         return
+#     def inverse_transform(self):
+#         return denoised
 
 def patch_tsvds_from_frames(frames,
                             patch_ssize=10, patch_tsize=600,
