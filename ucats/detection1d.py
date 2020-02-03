@@ -6,13 +6,16 @@ from functools import partial
 
 from numba import jit
 
+from scipy import ndimage as ndi
+
 import matplotlib.pyplot as plt
 
 from imfun.filt.dctsplines import l2spline, sp_decompose
 from imfun.core import extrema
+from imfun import bwmorph
 
 from .scramble import local_jitter
-from .utils import smoothed_medianf, rolling_sd_pd, find_bias 
+from .utils import smoothed_medianf, rolling_sd_pd, find_bias
 
 
 

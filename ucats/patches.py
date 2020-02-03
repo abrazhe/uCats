@@ -1,12 +1,15 @@
 """
 Handling windowed views on data, aka "patches"
 """
+import numpy as np
 
-import itertools as itt 
+import itertools as itt
 from numpy.linalg import svd
 from multiprocessing import Pool
 
 from imfun.core import coords
+
+from .globals import _dtype_
 
 
 def make_grid(shape,sizes,strides):
@@ -62,7 +65,7 @@ def extract_random_cubic_patch(frames, w=10):
      - w : scalar int, side of the cubic patch [10]
     """
     sl = tuple()
-    starts = (randint(0, dim-w) for dim in frames.shape)
+    starts = (np.random.randint(0, dim-w) for dim in frames.shape)
     sl =  tuple(slice(j, j+w) for j in starts)
     return frames[sl]
 
@@ -70,7 +73,7 @@ def extract_random_column(frames, w=10):
     if not np.iterable(w):
         w = (w,)*np.ndim(frames)
     sh = frames.shape
-    loc = tuple(randint(0,s-wi,) for s,wi in zip(sh,w))
+    loc = tuple(np.random.randint(0,s-wi,) for s,wi in zip(sh,w))
     sl = tuple(slice(j,j+wi) for j,wi in zip(loc, w))
     #print(loc, sl)
     return frames[sl]

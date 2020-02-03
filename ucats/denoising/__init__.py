@@ -12,7 +12,7 @@ from ..utils import (avg_filter_greater,
 
 from ..decomposition import min_ncomp
 
-from .block_svd_separate_tslices import block_svd_separate_tslices, block_svd_denoise_and_separate
+from .block_svd_denoise_and_separate import block_svd_separate_tslices, block_svd_denoise_and_separate
 # TODO: make more sane imports
 from . import patch_svd_double_stage
 from .patch_svd_double_stage import patch_svd_denoise_frames

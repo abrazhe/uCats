@@ -3,7 +3,12 @@ Use truncated SVD in patches to simultaneously denoise and separate signal
 from slowly varying baseline in framestack
 """
 
+import sys
+
 import numpy as np
+
+from functools import partial
+import itertools as itt
 
 from scipy import ndimage as ndi
 
@@ -11,9 +16,14 @@ from sklearn import cluster as skclust
 
 from imfun import cluster
 
+
 from ..decomposition import min_ncomp
 from ..patches import make_weighting_kern
 from ..baselines import find_bias,simple_baseline
+from ..utils import smoothed_medianf, mad_std
+from ..globals import _dtype_
+from ..masks import threshold_object_size
+from ..detection1d import percentile_label
 
 def correct_small_loads(points, affs, min_loads=5, niter=1):
     for j in range(niter):
@@ -99,7 +109,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rank = np.int(min(max(min_comps, min_ncomp(s, patch.shape)+1), max_comps))
             rank = (min(np.min(patch.shape)-1, rank))
             #print('\n\n\n rank ', rank, patch.shape, u.shape, s.shape, vh.shape)
-            sys.stderr.write(' svd rank: %02d'% rank)
+            #sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
 
@@ -152,7 +162,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             #ux_signals = signals_filtered.T
             #ux_biases = biases.T
             nactive = np.sum(active_comps)
-            sys.stderr.write(' active components: %02d                   '%nactive)
+            #sys.stderr.write(' active components: %02d                   '%nactive)
 
             baselines = biases.T@Wx_b#@vhx[:rank]
             rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)

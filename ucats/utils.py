@@ -14,7 +14,8 @@ from imfun.core import ah
 
 
 
-_dtype_ = np.float32
+from .globals import _dtype_
+
 
 
 @jit
@@ -297,7 +298,7 @@ def adaptive_filter_2d(img,th=5, smooth=5, smoother=ndi.median_filter, keep_clus
 
 #from multiprocessing import Pool
 from pathos.pools import ProcessPool as Pool
-def process_signals_parallel(collection, pipeline=simple_pipeline_,pipeline_kw=None,njobs=4):
+def process_signals_parallel(collection, pipeline,pipeline_kw=None,njobs=4):
     """
     Process temporal signals some pipeline function and return processed signals
     (parallel version)

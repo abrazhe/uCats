@@ -14,14 +14,17 @@ from imfun import components
 from ..decomposition import min_ncomp, svd_flip_signs
 from ..patches import make_grid, slice_overlaps_square
 from ..utils import adaptive_filter_1d, adaptive_filter_2d
+from ..baselines import multi_scale_simple_baseline
+from .. import utils
 from .. import scramble
+
+from ..globals import _dtype_
 
 
 _baseline_smoothness_ = 300
 _nclusters_ = 32
 _do_pruning_ = False
 _do_scrambling_ = False
-_dtype_=np.float32
 
 # TODO:
 # - [ ] Exponential-family PCA
@@ -111,7 +114,7 @@ def patch_tsvds_from_frames(frames,
     if tstride > patch_tsize :
         tstride = patch_tsize//2
     tstride = min(L, tstride)
-    squares = make_grid2(frames.shape, (patch_tsize, patch_ssize, patch_ssize), (tstride, sstride, sstride))
+    squares = make_grid(frames.shape, (patch_tsize, patch_ssize, patch_ssize), (tstride, sstride, sstride))
     if tsmooth > 0:
         #print('Will smooth temporal components')
         #smoother = lambda v: smoothed_medianf(v, tsmooth*0.5, tsmooth)
@@ -196,8 +199,8 @@ def project_from_tsvd_patches(collection, shape, with_f0=False, baseline_smoothn
         if with_f0:
             #bs = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in signals])
             smooth_levels = (np.array([0.25, 0.5, 1, 1.5])*baseline_smoothness).astype(int)
-            bs = np.array([multi_scale_simple_baseline(v,plow=50,smooth_levels=smooth_levels,ns=mad_std(v)) for v in signals])
-            if any(isnan(bs)):
+            bs = np.array([multi_scale_simple_baseline(v,plow=50,smooth_levels=smooth_levels,ns=utils.mad_std(v)) for v in signals])
+            if np.any(np.isnan(bs)):
                 print('Nan in ', sq)
                 #return (signals, filters, center,sq,w_sh)
             rec_b = (bs.T@filters).reshape(w_sh)
@@ -247,7 +250,7 @@ def second_stage_svd(collection, fsh,  n_clusters=_nclusters_, Nhood=100, cluste
             clust.batch_size  = min(clust.batch_size, len(signals))
         labels = clust.fit_predict(signals)
         sqx_approx = np.zeros(signals.shape, _dtype_)
-        for i in unique(labels):
+        for i in np.unique(labels):
             group = labels==i
             u,s,vh = svd(signals[group],False)
             r = min_ncomp(s, (u.shape[0],vh.shape[1]))+1

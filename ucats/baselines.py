@@ -24,13 +24,16 @@ from imfun.filt.dctsplines import l2spline
 from imfun import components
 from imfun.multiscale import mvm
 
-_dtype_ = np.float32
+
+
 min_px_size_ = 10
 
+from .patches import make_grid
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
 from .utils import process_signals_parallel
-from .components import pca_flip_signs
+from .decomposition  import pca_flip_signs
 from . import patches
+from .globals import _dtype_
 
 
 def store_baseline_pickle(name, frames, ncomp=50):
@@ -40,6 +43,34 @@ def store_baseline_pickle(name, frames, ncomp=50):
 def load_baseline_pickle(name):
     pcf = pickle.load(open(name, 'rb'))
     return pcf.inverse_transform(pcf.coords)
+
+
+
+@jit
+def running_min(v):
+    out = np.zeros(v.shape)
+    mn = v[0]
+    for i in range(len(v)):
+        mn = min(mn, v[i])
+        out[i] = mn
+    return out
+
+def top_running_min(v):
+    return np.maximum(running_min(v), running_min(v[::-1])[::-1])
+
+
+from skimage.restoration import denoise_tv_chambolle
+def baseline_runmin(y, smooth=50, wsize=50, wstep=5):
+    L = len(y)
+    sqs = make_grid((L,), wsize,wstep)
+    counts = np.zeros(L)
+    out = np.zeros(L)
+    for sq in sqs:
+        sl = sq[0]
+        bx = top_running_min(y[sl])
+        out[sl] += bx
+        counts[sl] += 1
+    return denoise_tv_chambolle(out/(counts+1e-5), weight=smooth)
 
 def process_tmvm(v, k=3,level=7, start_scale=1, tau_smooth=1.5,rec_variant=2,nonnegative=True):
     """

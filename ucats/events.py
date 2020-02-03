@@ -3,6 +3,9 @@ import pandas as pd
 
 from scipy import ndimage as ndi
 
+from .globals import _dtype_
+
+
 def quantify_events(rec, labeled, dt=1):
     "Collect information about transients for a 1D reconstruction"
     acc = []
