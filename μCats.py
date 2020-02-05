@@ -516,7 +516,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             rank = np.int(min(max(min_comps, min_ncomp(s, patch.shape)+1), max_comps))
             rank = (min(np.min(patch.shape)-1, rank))
             #print('\n\n\n rank ', rank, patch.shape, u.shape, s.shape, vh.shape)
-            sys.stderr.write(' svd rank: %02d'% rank)
+            #sys.stderr.write(' svd rank: %02d'% rank)
         else:
             rank = ncomp
 
@@ -537,7 +537,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             Wx_b = W
 
         if only_truncated_svd:
-            sys.stderr.write('__ doing only truncated svd                 ')
+            #sys.stderr.write('__ doing only truncated svd                 ')
             baselines = ux@Wx_b#@vhx[:rank]
             rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
             rec = np.zeros(w_sh)
@@ -569,7 +569,7 @@ def block_svd_denoise_and_separate(data, stride=2, nhood=5,
             #ux_signals = signals_filtered.T
             #ux_biases = biases.T
             nactive = np.sum(active_comps)
-            sys.stderr.write(' active components: %02d                   '%nactive)
+            #sys.stderr.write(' active components: %02d                   '%nactive)
 
             baselines = biases.T@Wx_b#@vhx[:rank]
             rec_baselines = baselines.reshape(w_sh) + patch_c.reshape(psh)
@@ -1234,7 +1234,7 @@ def _patch_pca_denoise_with_dtw(data,stride=2, nhood=5, npc=6,
 
 
 
-def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn = stats.pearsonr,mask_of_interest=None):
+def nonlocal_video_smooth(data, stride=2,nhood=5,corrfn=stats.pearsonr,mask_of_interest=None):
     sh = data.shape
     if mask_of_interest is None:
         mask_of_interest = np.ones(sh[1:],dtype=np.bool)
