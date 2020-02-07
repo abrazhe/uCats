@@ -19,7 +19,7 @@ from imfun import cluster
 
 from ..decomposition import min_ncomp
 from ..patches import make_weighting_kern
-from ..baselines import find_bias,simple_baseline
+from ..baselines import find_bias,percentile_baseline
 from ..utils import smoothed_medianf, mad_std
 from ..globals import _dtype_
 from ..masks import threshold_object_size
