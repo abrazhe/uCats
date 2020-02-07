@@ -17,6 +17,12 @@ from imfun.core import ah
 from .globals import _dtype_
 
 
+from skimage.restoration import denoise_tv_chambolle
+def iterated_tv_chambolle(y, weight, niters=5):
+    ys = np.copy(y)
+    for i in range(niters):
+        ys = denoise_tv_chambolle(ys, weight)
+    return ys
 
 @jit
 def percentile_th_frames(frames,plow=5):

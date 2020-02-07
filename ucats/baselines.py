@@ -20,17 +20,19 @@ import matplotlib.pyplot as plt
 
 
 from imfun import fseq
-from imfun.filt.dctsplines import l2spline
+from imfun.filt.dctsplines import l2spline,l1spline
 from imfun import components
 from imfun.multiscale import mvm
-
+from imfun.components.pca import PCA_frames
 
 
 min_px_size_ = 10
 
 from .patches import make_grid
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
+from .utils import mad_std
 from .utils import process_signals_parallel
+from .utils import iterated_tv_chambolle
 from .decomposition  import pca_flip_signs
 from . import patches
 from .globals import _dtype_
@@ -59,18 +61,79 @@ def top_running_min(v):
     return np.maximum(running_min(v), running_min(v[::-1])[::-1])
 
 
-from skimage.restoration import denoise_tv_chambolle
-def baseline_runmin(y, smooth=50, wsize=50, wstep=5):
+
+
+def windowed_runmin(y, wsize=50, wstep=5):
     L = len(y)
     sqs = make_grid((L,), wsize,wstep)
-    counts = np.zeros(L)
-    out = np.zeros(L)
+    out = (np.max(y) + 0.1)*np.ones(L, _dtype_)
     for sq in sqs:
         sl = sq[0]
         bx = top_running_min(y[sl])
-        out[sl] += bx
-        counts[sl] += 1
-    return denoise_tv_chambolle(out/(counts+1e-5), weight=smooth)
+        out[sl] = np.minimum(out[sl],bx)
+    return out
+
+
+
+
+def select_most_stable_branch(variants,window=50,wsize=None):
+    L = len(variants[0])
+    if wsize is None:
+        wsize = max(2,window//3)
+    squares = make_grid((L,1),window,wsize)
+    out = np.zeros(L)
+    gradients = [np.gradient(np.gradient(v)) for v in variants]
+    for sq in squares:
+        sq = sq[0]
+        best = np.argmin([np.sum(abs(g[sq])) for g in gradients])
+        out[sq] = variants[best][sq]
+    return out
+
+
+
+def symmetrized_l1_runmin(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5):
+    b1 = l1spline(y, l1smooth)
+    ns = mad_std(y-b1)
+    b0 = iterated_tv_chambolle(y, tv_weight*ns, tv_niter)
+    b2a = windowed_runmin(b0-b1)+b1
+    b2b = -windowed_runmin(-(b0-b1))+b1
+    b2a,b2b = (iterated_tv_chambolle(b,1,5) for b in (b2a,b2b)) # making this too slow?
+    return  l2spline(select_most_stable_branch((b2a,b2b)),l2smooth)
+
+def composite_baseline(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5,correction_smooth=150):
+    "don't use"
+    b1 = symmetrized_l1_runmin(y, tv_weight, tv_niter, l1smooth, l2smooth)
+    difference = y-b1
+    ns = mad_std(difference)
+    bb = windowed_runmin(difference)
+    bb = iterated_tv_chambolle(bb,tv_weight*ns,tv_niter)
+    #bb = l2spline(bb,correction_smooth)
+    return b1 + bb + percentile_baseline(difference-bb,plow=10,smooth=correction_smooth )
+
+
+def percentile_baseline(y, plow=25, th=3, smooth=150,ns=None):
+    b = l2spline(ndi.percentile_filter(y,plow,smooth),smooth/5)
+    if ns is None:
+        ns = rolling_sd_pd(y)
+    d = y-b
+    if not np.any(ns):
+        ns = np.std(y)
+    bg_points = d[np.abs(d)<=th*ns]
+    if len(bg_points) > 10:
+        b = b + np.median(bg_points) # correct scalar shift
+    return b
+
+
+
+def first_pc_baseline(frames, niters=10, runmin_smooth=25, runmin_window=100, simple_smooth=150):
+    f0 = np.zeros(frames, _dtype_)
+    for i in range(niters):
+        pcf = PCA_frames(frames-f0,1)
+        y = pcf.coords[:,0]
+        b = baseline_runmin(y,smooth=runmin_smooth,wsize=runmin_window,wstep=runmin_window//4)
+        pc_baseline = b + percentile_baseline(y-b, smooth=simple_smooth)
+        f0 += pcf.inverse_transform(pc_baseline.reshape(-1,1))
+    return f0
 
 def process_tmvm(v, k=3,level=7, start_scale=1, tau_smooth=1.5,rec_variant=2,nonnegative=True):
     """
@@ -118,22 +181,11 @@ def tmvm_get_baselines(y,th=3,smooth=100,symmetric=False):
     return b + np.median(d[d<=th*ns]) # + bias as constant shift
 
 
-def simple_baseline(y, plow=25, th=3, smooth=25,ns=None):
-    b = l2spline(ndi.percentile_filter(y,plow,smooth),smooth/5)
-    if ns is None:
-        ns = rolling_sd_pd(y)
-    d = y-b
-    if not np.any(ns):
-        ns = np.std(y)
-    bg_points = d[np.abs(d)<=th*ns]
-    if len(bg_points) > 10:
-        b = b + np.median(bg_points) # correct scalar shift
-    return b
 
 def multi_scale_simple_baseline(y, plow=50, th=3, smooth_levels=[10,20,40,80,160], ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    b_estimates = [simple_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
+    b_estimates = [percentile_baseline(y,plow,th,smooth,ns) for smooth in smooth_levels]
     low_env = np.amin(b_estimates, axis=0)
     low_env = np.clip(low_env,np.min(y), np.max(y))
     return  l2spline(low_env, np.min(smooth_levels))

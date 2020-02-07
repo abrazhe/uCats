@@ -14,8 +14,7 @@ from imfun import components
 from ..decomposition import min_ncomp, svd_flip_signs
 from ..patches import make_grid, slice_overlaps_square
 from ..utils import adaptive_filter_1d, adaptive_filter_2d
-from ..baselines import simple_baseline, baseline_runmin
-from .. import baselines
+from ..baselines import multi_scale_simple_baseline, symmetrized_l1_runmin
 from .. import utils
 from .. import scramble
 
@@ -199,11 +198,9 @@ def project_from_tsvd_patches(collection, shape, with_f0=False, baseline_smoothn
 
         if with_f0:
             #bs = np.array([simple_baseline(v,plow=50,smooth=baseline_smoothness,ns=mad_std(v)) for v in signals])
-            smooth_levels = (np.array([0.25, 0.5, 1, 1.5])*baseline_smoothness).astype(int)
+            #smooth_levels = (np.array([0.25, 0.5, 1, 1.5])*baseline_smoothness).astype(int)
             #bs = np.array([multi_scale_simple_baseline(v,plow=50,smooth_levels=smooth_levels,ns=utils.mad_std(v)) for v in signals])
-            bs = (baseline_runmin(v, 25, 50) for v in signals)
-            bs = np.array([b + simple_baseline(v-b, smooth=baseline_smoothness, ns=utils.mad_std(v))
-                           for v,b in zip(signals, bs)])
+            bs = np.array([symmetrized_l1_runmin(v) for v in signals])
             if np.any(np.isnan(bs)):
                 print('Nan in ', sq)
                 #return (signals, filters, center,sq,w_sh)
