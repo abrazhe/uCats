@@ -111,8 +111,22 @@ def composite_baseline(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5,corre
     return b1 + bb + percentile_baseline(difference-bb,plow=10,smooth=correction_smooth )
 
 
-def percentile_baseline(y, plow=25, th=3, smooth=150,ns=None):
-    b = l2spline(ndi.percentile_filter(y,plow,smooth),smooth/5)
+def percentile_baseline(y, plow=25, th=3, percentile_window=150, out_smooth=25, ns=None, npad=None, smoother=l2spline):
+    L  = len(y)
+    if npad is None:
+        npad = percentile_window//2
+    if npad > 0:
+        #tv2 = np.arange(L + npad*2)-npad
+        #p1 = np.polyfit(tv2[npad:npad+npad//2],y[:npad//2],1)
+        #p2 = np.polyfit(tv2[-npad-npad//2:-npad],y[-npad//2:],1)
+        ypad = np.pad(y, npad,'median', stat_length=min(L,10))
+        #y[:npad] = np.polyval(p1, tv2[:npad])
+        #y[-npad:] = np.polyval(p2, tv2[-npad:])
+    else:
+        ypad = y
+
+    b = smoother(ndi.percentile_filter(ypad,plow,percentile_window),out_smooth)
+    b = b[npad:L+npad]
     if ns is None:
         ns = rolling_sd_pd(y)
     d = y-b
