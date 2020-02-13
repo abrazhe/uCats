@@ -7,10 +7,18 @@ import itertools as itt
 
 from imfun import bwmorph,cluster
 
-from .utils import percentile_th_frames
 
-
-
+@jit
+def percentile_th_frames(frames,plow=5):
+    sh = frames[0].shape
+    medians = np.median(frames,0)
+    out = np.zeros(medians.shape)
+    for r in range(sh[0]):
+        for c in range(sh[1]):
+            v = frames[:,r,c]
+            mu = medians[r,c]
+            out[r,c] = -np.percentile(v[v<=mu],plow)
+    return out
 
 def refine_mask_by_percentile_filter(m, p=50, size=3,niter=1,with_cleanup=False,min_obj_size=2):
     out = np.copy(m).astype(bool)

@@ -15,6 +15,7 @@ from imfun.core import ah
 
 
 from .globals import _dtype_
+from .masks import threshold_object_size
 
 
 from skimage.restoration import denoise_tv_chambolle
@@ -24,17 +25,7 @@ def iterated_tv_chambolle(y, weight, niters=5):
         ys = denoise_tv_chambolle(ys, weight)
     return ys
 
-@jit
-def percentile_th_frames(frames,plow=5):
-    sh = frames[0].shape
-    medians = np.median(frames,0)
-    out = np.zeros(medians.shape)
-    for r in range(sh[0]):
-        for c in range(sh[1]):
-            v = frames[:,r,c]
-            mu = medians[r,c]
-            out[r,c] = -np.percentile(v[v<=mu],plow)
-    return out
+
 
 def downsample_image(img):
     sigma_0 = 0.6
