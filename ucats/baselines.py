@@ -111,7 +111,7 @@ def composite_baseline(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5,corre
     return b1 + bb + percentile_baseline(difference-bb,plow=10,smooth=correction_smooth )
 
 
-def percentile_baseline(y, plow=25, th=3, percentile_window=150, out_smooth=25, ns=None, npad=None, smoother=l2spline):
+def percentile_baseline(y, plow=25, percentile_window=150, out_smooth=25,smoother=l2spline, ns=None, th=3, npad=None, ):
     L  = len(y)
     if npad is None:
         npad = percentile_window//2
