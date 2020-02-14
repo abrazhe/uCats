@@ -100,28 +100,23 @@ def symmetrized_l1_runmin(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5):
     b2a,b2b = (iterated_tv_chambolle(b,1,5) for b in (b2a,b2b)) # making this too slow?
     return  l2spline(select_most_stable_branch((b2a,b2b)),l2smooth)
 
-def composite_baseline(y, tv_weight=1, tv_niter=5, l1smooth=50, l2smooth=5,correction_smooth=150):
-    "don't use"
-    b1 = symmetrized_l1_runmin(y, tv_weight, tv_niter, l1smooth, l2smooth)
-    difference = y-b1
-    ns = mad_std(difference)
-    bb = windowed_runmin(difference)
-    bb = iterated_tv_chambolle(bb,tv_weight*ns,tv_niter)
-    #bb = l2spline(bb,correction_smooth)
-    return b1 + bb + percentile_baseline(difference-bb,plow=10,smooth=correction_smooth )
+def l1_baseline2(y, smooth=25, median_window=50):
+    npad = median_window//2
+    ypad = np.pad(y, npad, 'median',stat_length=smooth//2)
+    b1 = l1spline(ypad, smooth)[npad:-npad]         # get overall trend
+    v = y-b1
+    vm = ndi.percentile_filter(v,50,median_window)
+    vmlow = windowed_runmin(vm, 2*median_window, 2*median_window//5)
+    b_add = l2spline(vmlow, smooth/2)
+    return b1 + b_add
 
 
-def percentile_baseline(y, plow=25, percentile_window=150, out_smooth=25,smoother=l2spline, ns=None, th=3, npad=None, ):
+def percentile_baseline(y, plow=25, percentile_window=25, out_smooth=25,smoother=l2spline, ns=None, th=3, npad=None, ):
     L  = len(y)
     if npad is None:
         npad = percentile_window//2
     if npad > 0:
-        #tv2 = np.arange(L + npad*2)-npad
-        #p1 = np.polyfit(tv2[npad:npad+npad//2],y[:npad//2],1)
-        #p2 = np.polyfit(tv2[-npad-npad//2:-npad],y[-npad//2:],1)
         ypad = np.pad(y, npad,'median', stat_length=min(L,10))
-        #y[:npad] = np.polyval(p1, tv2[:npad])
-        #y[-npad:] = np.polyval(p2, tv2[-npad:])
     else:
         ypad = y
 
@@ -137,15 +132,64 @@ def percentile_baseline(y, plow=25, percentile_window=150, out_smooth=25,smoothe
         b = b + np.median(bg_points) # correct scalar shift
     return b
 
+def baseline_with_shifts(y,l1smooth=25):
+    ys_l1 = l1spline(y, l1smooth)
+    ns = mad_std(y-ys_l1)
+    ys = iterated_tv_chambolle(y, 1*ns, 5)
+    jump_locs, shift = find_jumps(ys,ys_l1, pre_smooth=1.5)
+    trend = l1_baseline2(y-shift,l1smooth)
+    baseline = trend + shift
+    return baseline
+
+from imfun.core import extrema
+def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95):
+    v = ys_tv - ys_l1
+    if pre_smooth > 0:
+        v = l2spline(v, pre_smooth)
+    #g = np.abs(np.gradient(v))
+    maxima = extrema.locextr(v, refine=False, output='max')
+    xfit, yfit, der1, maxima, minima = extrema.locextr(v, refine=False, sort_values=False)
+    _, _, _, vvmx, vvmn = extrema.locextr(np.cumsum(v), refine=False, sort_values=False)
+    vv_extrema = np.concatenate([vvmx, vvmn])
+    g = np.abs(der1)
+    ee = np.array(extrema.locextr(g, refine=False, sort_values=False, output='max'))
+    ee = ee[ee[:,1] >= np.percentile(g, top_gradient)]
+    all_extrema = np.concatenate([maxima, minima])
+    extrema_types = {em : (1 if em in maxima else -1) for em in all_extrema}
+    jumps = []
+    Lee = len(ee)
+    for k,em in enumerate(ee[:,0]):
+        if np.any(all_extrema<=em):
+            leftmost = np.max(all_extrema[all_extrema<=em])
+            if k > 0 and leftmost <= ee[k-1,0]:
+                continue
+        else: continue
+        if np.any(all_extrema>em):
+            rightmost = np.min(all_extrema[all_extrema>em])
+            if k < Lee-1 and rightmost > ee[k+1,0]:
+                continue
+        else: continue
+        if extrema_types[leftmost] != extrema_types[rightmost]:
+            if np.sign(v[leftmost]) != np.sign(v[rightmost]):
+                if np.min(np.abs(em - vv_extrema)) < 2:
+                    jumps.append(int(em))
+
+    shift = np.zeros(len(v))
+    L = len(v)
+    for j in jumps:
+        if j < L-1:
+            shift[j+1] = np.mean(ys_tv[j+1:min(j+6,L)]) - np.mean(ys_tv[max(0,j-5):j])
+    return jumps, np.cumsum(shift)
 
 
-def first_pc_baseline(frames, niters=10, runmin_smooth=25, runmin_window=100, simple_smooth=150):
-    f0 = np.zeros(frames, _dtype_)
+def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None):
+    f0 = np.zeros(frames.shape, _dtype_)
+    fnkw = {} if fnkw is None else fnkw
     for i in range(niters):
         pcf = PCA_frames(frames-f0,1)
         y = pcf.coords[:,0]
-        b = baseline_runmin(y,smooth=runmin_smooth,wsize=runmin_window,wstep=runmin_window//4)
-        pc_baseline = b + percentile_baseline(y-b, smooth=simple_smooth)
+        b = baseline_fn(y,**fnkw)
+        pc_baseline = b #+ percentile_baseline(y-b, smooth=simple_smooth)
         f0 += pcf.inverse_transform(pc_baseline.reshape(-1,1))
     return f0
 
