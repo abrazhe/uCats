@@ -1,9 +1,16 @@
-{"stab_model": [["shifts", "multi-templates", {}]],
- "morphology_channel": 0,
- "baseline_smoothness": 300,
- "ca_channel": 1,
- "with_motion_movies": 1,
- "suff":"astrocat006",
- "motion_with_pca_denoise": 1,
- "ncpu":1
+{
+  "stab_model": [
+    [
+      "shifts",
+      "multi-templates",
+      {}
+    ]
+  ],
+  "morphology_channel": 0,
+  "baseline_smoothness": 300,
+  "ca_channel": 1,
+  "with_motion_movies": 1,
+  "suff": "astrocat006",
+  "motion_with_pca_denoise": 1,
+  "ncpu": 1
 }

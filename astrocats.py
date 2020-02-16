@@ -2,118 +2,107 @@
 
 ## TODO: add second pass (correction) as an option
 
-import os,sys
-import h5py
-
 import argparse
-import pickle
+import gc
 import json
-
-from functools import partial,reduce
 import operator as op
+import os
+import socket
+from functools import reduce
 
-import numpy as np
-from numpy import *
-
-from scipy import ndimage,signal
-from scipy import ndimage as ndi
-
-import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
-
-from skimage.external import tifffile
-
-import pandas as pd
-
-from imfun import fseq,core,ui
-from imfun import multiscale
-from imfun import ofreg
-from imfun.ofreg import stackreg, imgreg
-from imfun.external import czifile
-
-from imfun.filt.dctsplines import l2spline, l1spline
-
-from imfun.multiscale import atrous
 from imfun import components
-
-
+from imfun import fseq, ui
+from imfun import ofreg
+from imfun.core import fnutils
+from imfun.external import czifile
+from imfun.ofreg import stackreg, imgreg
+from matplotlib import animation
+import numpy as np
+from scipy import ndimage
+from scipy import ndimage as ndi
+from scipy.ndimage import binary_closing, binary_opening
+from skimage.external import tifffile
+from tqdm import tqdm
 
 import ucats
 
-import socket
+
 def my_hostname():
     return socket.gethostname()
 
+
 _hostname_ = my_hostname()
 
-if _hostname_ in ['gamma','xps','delta']:
+if _hostname_ in ['gamma', 'xps', 'delta']:
     plt.rcParams['animation.ffmpeg_path'] = '/usr/bin/ffmpeg'
 
 
-
-
 def main():
-    parser = argparse.ArgumentParser(description="""Astrocats: process a Ca imaging record file, detect Ca transients""")
-    argdict =  {
+    parser = argparse.ArgumentParser(
+        description="""Astrocats: process a Ca imaging record file, detect Ca transients""")
+    argdict = {
         "name": dict(nargs='?'),
         '-j': ('--json', dict(default=None, help="json file with default parameters")),
-        '-p': ('--pretend', dict(action='store_true',help="Pretend mode: don't do anything, dry-run")),
-        '-m': ('--stab-model', dict(action='append', metavar = ("STABMODEL","PARAMETER"),
-                               nargs = '+',
-                               #choices = ['shifts', 'softmesh', 'affine', 'Greenberg-Kerr'],
-                               help='add movement model to use for stabilization;\
+        '-p': ('--pretend', dict(action='store_true', help="Pretend mode: don't do anything, dry-run")),
+        '-m': ('--stab-model', dict(action='append', metavar=("STABMODEL", "PARAMETER"),
+            nargs='+',
+            # choices = ['shifts', 'softmesh', 'affine', 'Greenberg-Kerr'],
+            help='add movement model to use for stabilization;\
                                available models: {shifts, mslkp, msclg, affine, Greenberg-Kerr, homography}')),
         '-n': ('--ncpu', dict(default=4, type=int, help="number of CPU cores to use")),
-        #'--record': dict(default=None, help='record within file to use (where applicable)'),
+        # '--record': dict(default=None, help='record within file to use (where applicable)'),
         '-v': ('--verbose', dict(action='count', default=0, help='increment verbosity level')),
-        '--morphology-channel': dict(default=0,type=int, help='color channel to use for motion correction (if several)'),
-        '--ca-channel':dict(default=1, type=int, help='color channel with Ca-dependent fluorescence'),
+        '--morphology-channel': dict(default=0, type=int,
+            help='color channel to use for motion correction (if several)'),
+        '--ca-channel': dict(default=1, type=int, help='color channel with Ca-dependent fluorescence'),
         '--with-motion-movies': dict(action='store_true'),
         '--with-detection-movies': dict(action='store_true'),
         '--suff': dict(default='', help="optional suffix to append to saved registration recipe"),
-        '--fps': dict(default=10,type=float,help='fps of exported movie'),
+        '--fps': dict(default=10, type=float, help='fps of exported movie'),
         '--motion-with-adaptive_filter': dict(action='store_true'),
         '--motion-with-pca-denoise': dict(action='store_true'),
         '--codec': dict(default='libx264', help='movie codec'),
         '--writer': dict(default='ffmpeg', help='movie writer'),
         '--no-save-enh': dict(action='store_true'),
-        #'--save-denoised-dfof': dict(action='store_true'),
+        # '--save-denoised-dfof': dict(action='store_true'),
         '--no-events': dict(action='store_true'),
         '--skip-existing': dict(action='store_true'),
-        '--no-skip-dark-areas':dict(action='store_false'),
-        #'--do-oscillations': dict(action='store_true'),
+        '--no-skip-dark-areas': dict(action='store_false'),
+        # '--do-oscillations': dict(action='store_true'),
         '--detection-do-adaptive-median-filter': dict(action='store_true',
-                                                      help='whether to pre-filter data with an adaptive median filter'),
-        '--detection-low-percentile':dict(default=5, type=float,
-                                          help='lower values detect less FPs, higher values make more detections'),
-        '--detection-spatial_filter':dict(default=3, type=int, help='median smooth size for spatial SVD components'),
-        #'--detection-tau-smooth':dict(default=2., type=float,
+            help='whether to pre-filter data with an adaptive median filter'),
+        '--detection-low-percentile': dict(default=5, type=float,
+            help='lower values detect less FPs, higher values make more detections'),
+        '--detection-spatial_filter': dict(default=3, type=int, help='median smooth size for spatial SVD components'),
+        # '--detection-tau-smooth':dict(default=2., type=float,
         #                              help='smoothing in detection, make larger for less false positives,\
         #                              make smaller for detection of smaller events'),
         '--detection-var-threshold': dict(default=10, type=float,
-                                         help='(tmp) ̄%ΔF/F threshold for event detection with new algorithms'),
-        '--detection-loc-patchsize':dict(default=10,type=int),
-        '--detection-loc-stride':dict(default=5,type=int),
-        '--detection-use-clusters':dict(default=False, type=bool),
-        '--detection-temporal-window':dict(default=600,type=int),
-        '--detection-smoothed-reconstruction':dict(default=1,type=bool),
-        '--detection-min-components': dict(default=3,type=int,help='minimum number of SVD components to analyse'),
-        '--detection-no-variance-stabilization':dict(action='store_true'),
-        '--detection-no-second-pass':dict(action='store_true'),
-        '--baseline-smoothness': dict(default=150,type=float),
-        '--event-segmentation-threshold':dict(default=0.025, type=float, help='ΔF/F level at which separate nearby events'),
-        #'--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
-        '--event-peak-threshold':dict(default=0.085, type=float,help='event must contain a peak with at least this ΔF/F value'),
-        '--event-min-duration':dict(default=3, type=int,help='event must be at least this long (frames)'),
-        '--event-min-area':dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
-        '--bitrate':dict(default=32000,type=float, help='bitrate of exported movie'),
-        }
+            help='(tmp) ̄%ΔF/F threshold for event detection with new algorithms'),
+        '--detection-loc-patchsize': dict(default=10, type=int),
+        '--detection-loc-stride': dict(default=5, type=int),
+        '--detection-use-clusters': dict(default=False, type=bool),
+        '--detection-temporal-window': dict(default=600, type=int),
+        '--detection-smoothed-reconstruction': dict(default=1, type=bool),
+        '--detection-min-components': dict(default=3, type=int, help='minimum number of SVD components to analyse'),
+        '--detection-no-variance-stabilization': dict(action='store_true'),
+        '--detection-no-second-pass': dict(action='store_true'),
+        '--baseline-smoothness': dict(default=150, type=float),
+        '--event-segmentation-threshold': dict(default=0.025, type=float,
+            help='ΔF/F level at which separate nearby events'),
+        # '--event-segmentation-threshold':dict(default=0.05, type=float, help='ΔF/F level at which separate nearby events'),
+        '--event-peak-threshold': dict(default=0.085, type=float,
+            help='event must contain a peak with at least this ΔF/F value'),
+        '--event-min-duration': dict(default=3, type=int, help='event must be at least this long (frames)'),
+        '--event-min-area': dict(default=16, type=int, help='event must have at least this projection area (pixels)'),
+        '--bitrate': dict(default=32000, type=float, help='bitrate of exported movie'),
+    }
 
-    for arg,kw in list(argdict.items()):
+    for arg, kw in list(argdict.items()):
         if isinstance(kw, dict):
-            parser.add_argument(arg,  **argdict[arg])
+            parser.add_argument(arg, **argdict[arg])
         else:
             parser.add_argument(arg, kw[0], **kw[1])
 
@@ -126,59 +115,57 @@ def main():
 
     print('Will do second pass?', args.detection_do_second_pass)
 
-
     if args.stab_model is None:
         args.stab_model = ['msclg']
     for m in args.stab_model:
-        if not isinstance(m, str) and len(m)>2:
+        if not isinstance(m, str) and len(m) > 2:
             params = json.loads(m[2])
             m[2] = params
 
-
     # override everything if json parameter is given
-    if args.json :
-        with open(args.json,'rt') as jsonfile:
+    if args.json:
+        with open(args.json, 'rt') as jsonfile:
             pars = json.load(jsonfile)
             for key in pars:
                 setattr(args, key, pars[key])
 
     if args.name.endswith('.lif'):
-        process_lif_file(args.name,args)
+        process_lif_file(args.name, args)
     else:
         print("Processing", args.name)
         # I.   Load record(s)
         fs = load_record(args.name, ca_channel=args.ca_channel)
         process_record(fs, args.name, '', args)
     print('processing done')
-    return # from main
+    return  # from main
 
 
-import gc
-def process_lif_file(fname, args,min_frames=600):
+def process_lif_file(fname, args, min_frames=600):
     ###
     # pip install javabridge
     # pip install python-bioformats
     # conda install xmltodict
     ###
-    import io_lif
+    from ucats import io_lif
     print('------------------------------------------------------------------------------------------')
-    print('Processing file',fname)
-    metaxml,lif_recs = io_lif.load_meta_records(fname) # load record descriptions
+    print('Processing file', fname)
+    metaxml, lif_recs = io_lif.load_meta_records(fname)  # load record descriptions
     for rec in lif_recs:
         print(rec)
         if rec.get_size('T') > min_frames:
-            print('Will process %s:%s'%(fname, rec.name))
-            safename = rec.name.replace('/','_')
+            print('Will process %s:%s' % (fname, rec.name))
+            safename = rec.name.replace('/', '_')
             fs = rec.load_timelapse(fname)
             fs.meta['file_path'] = fname
             try:
-                process_record(fs,fname,safename,args)
+                process_record(fs, fname, safename, args)
             except Exception as e_:
-                print("Coulnd't process %s because of "%safename, e_)
+                print("Coulnd't process %s because of " % safename, e_)
             del fs
             plt.close('all')
             gc.collect()
     io_lif.javabridge.kill_vm()
+
 
 # def convert_from_varstab(df,b):
 #     "convert fluorescence signals separated to fchange and f baseline from 2*√f space"
@@ -186,16 +173,16 @@ def process_lif_file(fname, args,min_frames=600):
 #     dfc =  (df**2 + 2*df*b)/4
 #     return dfc, bc
 
-from tqdm import tqdm
+
 def process_record(fs, fname, series, args):
-    #nametag = '-'.join((fname,series,args.suff,'threshold_%1.2f'%args.detection_var_threshold))
-    nametag = '-'.join((fname,series,args.suff))
-    threshold_tag = '-threshold_%1.2f'%args.detection_var_threshold
+    # nametag = '-'.join((fname,series,args.suff,'threshold_%1.2f'%args.detection_var_threshold))
+    nametag = '-'.join((fname, series, args.suff))
+    threshold_tag = '-threshold_%1.2f' % args.detection_var_threshold
     print('nametag is:', nametag)
     print('threshold tag is:', threshold_tag)
-    h5f  = None
+    h5f = None
     # II.  Stabilize motion artifacts
-    fsc,_ = stabilize_motion(fs, args,nametag)
+    fsc, _ = stabilize_motion(fs, args, nametag)
 
     if isinstance(fsc, fseq.FStackColl) and len(fsc.stacks) > 1:
         fsc = fsc.stacks[args.ca_channel]
@@ -204,14 +191,14 @@ def process_record(fs, fname, series, args):
         return
 
     # I. -- Correcting for gain and offset --
-    frames = fsc.data.astype(float32)
-    gain_est,offset_est = ucats.exponential_family.estimate_gain_and_offset(frames,20,ntries=200,npatches=int(1e5),
-                                                         with_plot=True,save_to=nametag+'-gain-offset.png')
-    frames_x = (frames - offset_est)/gain_est
-    frames_x[frames_x<0] = 0
+    frames = fsc.data.astype(np.float32)
+    gain_est, offset_est = ucats.exponential_family.estimate_gain_and_offset(frames, 20, ntries=200, npatches=int(1e5),
+        with_plot=True, save_to=nametag + '-gain-offset.png')
+    frames_x = (frames - offset_est) / gain_est
+    frames_x[frames_x < 0] = 0
     fsc_x = fseq.from_array(frames_x)
 
-    np.save(nametag+'-gain-offset.npy', np.array((gain_est,offset_est)))
+    np.save(nametag + '-gain-offset.npy', np.array((gain_est, offset_est)))
     # I.a -- Adaptive median filtering input data --
     # if args.detection_do_adaptive_median_filter:
     #     print("Performing adaptive median filtering of the raw fluorescence signal")
@@ -221,13 +208,12 @@ def process_record(fs, fname, series, args):
     # else:
     #     frames = ucats.clip_outliers(frames,0.05, 99.95).astype(np.float32)
 
-
     # II. Process data
     F0 = None
-    detected_name = nametag + threshold_tag +'-detected.h5'
-    baseline_name = nametag+'-baseline.pickle'
+    detected_name = nametag + threshold_tag + '-detected.h5'
+    baseline_name = nametag + '-baseline.pickle'
     if False and (os.path.exists(detected_name)):
-        #h5f = h5py.File(detected_name,'r')
+        # h5f = h5py.File(detected_name,'r')
         fsx = fseq.from_hdf5(detected_name)
         h5f = fsx.h5file
         print('loading existing results of event detection:', detected_name)
@@ -236,35 +222,35 @@ def process_record(fs, fname, series, args):
             F0 = ucats.baselines.load_baseline_pickle(baseline_name)
         else:
             print('calculating baseline fluorescence')
-            #F0 = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
+            # F0 = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
             _, F0 = ucats.denoising.block_svd_denoise_and_separate(frames_x, nhood=16, stride=16, min_comps=3,
-                                                           baseline_smoothness=args.baseline_smoothness,
-                                                           spatial_filter=3,
-                                                           correct_spatial_components=False,
-                                                           with_clusters=False)
+                baseline_smoothness=args.baseline_smoothness,
+                spatial_filter=3,
+                correct_spatial_components=False,
+                with_clusters=False)
             print('storing baseline fluorescence estimate')
-            ucats.baselines.store_baseline_pickle(baseline_name,F0)
+            ucats.baselines.store_baseline_pickle(baseline_name, F0)
 
         F0 = fseq.from_array(F0)
         F0.meta['channel'] = 'F0'
-        frec=F0.data
+        frec = F0.data
 
     else:
         print('Denoising frames and separating background via block-SVD in sqrt-ed data')
-        #todo: take parameters from arguments to the script
-        #print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/args.detection_temporal_window)-1))
-        #if args.detection_do_variance_stabilization:
+        # todo: take parameters from arguments to the script
+        # print('Going in ~%d time-slices'% (2*np.ceil(len(frames)/args.detection_temporal_window)-1))
+        # if args.detection_do_variance_stabilization:
         #    xt = ucats.Anscombe.transform(frames_x)
-        #else:
+        # else:
         #    xt = frames_x
         xt = ucats.exponential_family.Anscombe.transform(frames_x)
         _process_kwargs = dict(
-            tsvd_kw = dict(ssmooth=3,
-                           tsmooth=5,
-                           sstride=5,
-                           do_pruning=True),
-            second_stage_kw=dict(Nhood=100,clustering_algorithm="MiniBatchKMeans",),
-            inverse_kw=dict(with_f0=True,),
+            tsvd_kw=dict(ssmooth=3,
+                tsmooth=5,
+                sstride=5,
+                do_pruning=True),
+            second_stage_kw=dict(Nhood=100, clustering_algorithm="MiniBatchKMeans", ),
+            inverse_kw=dict(with_f0=True, ),
             do_second_stage=True)
 
         # args.detection_loc_nhood,
@@ -275,73 +261,73 @@ def process_record(fs, fname, series, args):
         #                        svd_detection_plow = args.detection_low_percentile*2,
         #                        baseline_smoothness=args.baseline_smoothness,
         #                        spatial_min_cluster_size=5)
-        #fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
-        #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
-        #_process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
-        D_t,F0_t = ucats.denoising.patch_svd_denoise_frames(xt,
-                                                  save_coll=nametag+'-coll2.pz',
-                                                  **_process_kwargs)
-        D_t = np.clip(D_t, 2*np.sqrt(3/8), np.max(D_t))
-        F0_t = np.clip(F0_t, 2*np.sqrt(3/8), np.max(F0_t))
-        F0, frec = (ucats.exponential_family.Anscombe.inverse_transform(ucats.utils.adaptive_median_filter(x)) for x in (F0_t, D_t))
-        frec[frec<0] = 0
-        #dfosd = ucats.to_zscore_frames(D_t-F0_t)
-        dfof = (frec/F0 - 1)*(F0 > 0.05)
-        #dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
-        df_signals = dfof.reshape(len(F0),-1).T
-        labels = np.array([ucats.detection1d.simple_label(v,tau=0.5,threshold=args.detection_var_threshold/100)
+        # fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
+        # fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
+        # _process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
+        D_t, F0_t = ucats.denoising.patch_svd_denoise_frames(xt,
+            save_coll=nametag + '-coll2.pz',
+            **_process_kwargs)
+        D_t = np.clip(D_t, 2 * np.sqrt(3 / 8), np.max(D_t))
+        F0_t = np.clip(F0_t, 2 * np.sqrt(3 / 8), np.max(F0_t))
+        F0, frec = (ucats.exponential_family.Anscombe.inverse_transform(ucats.utils.adaptive_median_filter(x)) for x in
+                    (F0_t, D_t))
+        frec[frec < 0] = 0
+        # dfosd = ucats.to_zscore_frames(D_t-F0_t)
+        dfof = (frec / F0 - 1) * (F0 > 0.05)
+        # dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
+        df_signals = dfof.reshape(len(F0), -1).T
+        labels = np.array([ucats.detection1d.simple_label(v, tau=0.5, threshold=args.detection_var_threshold / 100)
                            for v in tqdm(df_signals)]).T.reshape(F0_t.shape)
-        #labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
-        #labels = ucats.refine_mask_by_percentile_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=10)
-        labels = ucats.utils.refine_mask_by_percentile_filter(labels, niter=5,with_cleanup=True,min_obj_size=10)
-
+        # labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
+        # labels = ucats.refine_mask_by_percentile_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=10)
+        labels = ucats.utils.refine_mask_by_percentile_filter(labels, niter=5, with_cleanup=True, min_obj_size=10)
 
         # III. Calculate ΔF/F
-        #print('Calculating relative fluorescence changes')
-        #th1 = ucats.percentile_th_frames(fdelta,2.0)
-        #print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
-        #print('Fbase  dynamic range:', fb.min(), fb.max())
-        #print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
-        #correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
-        #print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
-        #if any(np.isnan(correction_bias)):
+        # print('Calculating relative fluorescence changes')
+        # th1 = ucats.percentile_th_frames(fdelta,2.0)
+        # print('Fdelta dynamic range:', fdelta.min(), fdelta.max())
+        # print('Fbase  dynamic range:', fb.min(), fb.max())
+        # print('mad std dynamic range:', ucats.mad_std(xt-fdelta-fb, axis=0).min(), ucats.mad_std(xt-fb-fdelta, axis=0).max())
+        # correction_bias = ucats.find_bias_frames(xt-fdelta-fb,3,ucats.mad_std(xt-fdelta-fb,axis=0))
+        # print('Correction bias dynamic range:', np.min(correction_bias), np.max(correction_bias))
+        # if any(np.isnan(correction_bias)):
         #    correction_bias = np.zeros(correction_bias.shape)
-        #correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
-        #fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
+        # correction_bias[np.isnan(correction_bias)] = 0 ## can't find out so far why there are nans in some cases there. there shouldn't be
+        # fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
 
-        #frec = ucats.adaptive_median_filter(frec)
-        dFoF = ucats.utils.adaptive_median_filter(frec/F0-1)
-        dFoFx = dFoF*labels
-        #del labels, labels2, D_t, F0_t
+        # frec = ucats.adaptive_median_filter(frec)
+        dFoF = ucats.utils.adaptive_median_filter(frec / F0 - 1)
+        dFoFx = dFoF * labels
+        # del labels, labels2, D_t, F0_t
 
-        #if args.detection_do_variance_stabilization:
+        # if args.detection_do_variance_stabilization:
         #    frames_dn,F0 = ucats.convert_from_varstab(fdelta, fb + 0*correction_bias)
-        #else:
+        # else:
         #    frames_dn, F0 = fdelta, fb
         print('storing baseline fluorescence estimate')
-        ucats.baselines.store_baseline_pickle(baseline_name,F0)
+        ucats.baselines.store_baseline_pickle(baseline_name, F0)
 
-        #nsdt = ucats.std_median(fdelta,axis=0)
-        #mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
-        #mask1 = fdelta >= th1
-        #mask2 = frames_dn/F0 >= 0.01 # 1% change from baseline
-        #mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
-        #mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
-        #mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
-        #frames_dn *= mask_final
-        #dfofx = frames_dn/F0
-        dFoF[np.abs(F0)<1e-5] = 0
+        # nsdt = ucats.std_median(fdelta,axis=0)
+        # mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
+        # mask1 = fdelta >= th1
+        # mask2 = frames_dn/F0 >= 0.01 # 1% change from baseline
+        # mask_final = mask_pipeline(ucats.select_overlapping(mask1,mask2))
+        # mask = ucats.opening_of_closing((fdelta > th)*(fdelta>nsdt)*(fdelta/fb > 0.025))
+        # mask = ucats.opening_of_closing((fdelta > th)*(fdelta/fb > 0.025))
+        # frames_dn *= mask_final
+        # dfofx = frames_dn/F0
+        dFoF[np.abs(F0) < 1e-5] = 0
         print('Baseline dynamic range:', np.min(F0), np.max(F0))
-        #F0 =  0.25*fb**2
-        #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
-        #del fb, fdelta,mask_final
+        # F0 =  0.25*fb**2
+        # frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
+        # del fb, fdelta,mask_final
 
         coll_ = ucats.events.EventCollection(dFoFx,
-                                      threshold=args.event_segmentation_threshold,
-                                      min_area=args.event_min_area,
-                                      min_duration=args.event_min_duration,
-                                      peak_threshold=args.event_peak_threshold)
-        dFoFx = dFoFx*(coll_.to_filtered_array()>0)
+            threshold=args.event_segmentation_threshold,
+            min_area=args.event_min_area,
+            min_duration=args.event_min_duration,
+            peak_threshold=args.event_peak_threshold)
+        dFoFx = dFoFx * (coll_.to_filtered_array() > 0)
         channel_name = 'newrec9'
         # if args.detection_do_second_pass:
         #     print('Doing second pass...')
@@ -377,117 +363,116 @@ def process_record(fs, fname, series, args):
         F0 = fseq.from_array(F0)
         F0.meta['channel'] = 'F0'
 
-        #if args.no_skip_dark_areas:
+        # if args.no_skip_dark_areas:
         #    print('calculating well-stained and poorly-stained areas')
         #    colored_mask = dark_area_mask(F0.data.mean(0))
-        #else:
+        # else:
         #    print('no color mask asked for')
         #    colored_mask = np.ones(F0[0].shape, np.bool)
 
-        #f,ax = plt.subplots(1,1,figsize=(8,8));
-        #ax.imshow(F0.data.mean(0),cmap='gray')
-        #ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
-        #plt.tight_layout()
-        #f.savefig(nametag+'-colored_mask.png')
-        #plt.close(f)
+        # f,ax = plt.subplots(1,1,figsize=(8,8));
+        # ax.imshow(F0.data.mean(0),cmap='gray')
+        # ax.imshow(ui.plots.mask4overlay2(colored_mask,alpha=0.5))
+        # plt.tight_layout()
+        # f.savefig(nametag+'-colored_mask.png')
+        # plt.close(f)
         fsx = fseq.from_array(dFoFx)
         fsx.meta['channel'] = channel_name
 
-        #meta = fsx.meta
-        #fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0))
-        #fsx.meta = meta
+        # meta = fsx.meta
+        # fsx = fseq.from_array(fsx.data*(coll_.to_filtered_array()>0))
+        # fsx.meta = meta
         #   del coll_
         print('--->Done')
         if args.do_save_enh:
             fsx.to_hdf5(detected_name, compress_level=3)
 
-
     # VI.  Make movies
     if args.verbose: print('Making movies of detected activity')
-    #fsout = fseq.FStackColl([fsc,  fsx])
-    #frames_out = F0.data*(asarray(fsx.data,float32)+1)
-    #frames_out = F0.data
-    frames_out=frec
-    #frames_out = F0.data*(dfof_cleaned + 1)
-    fsout = fseq.FStackColl([fseq.from_array(frames_out),  fsx])
-    p = ui.Picker(fsout); p.start()
+    # fsout = fseq.FStackColl([fsc,  fsx])
+    # frames_out = F0.data*(asarray(fsx.data,float32)+1)
+    # frames_out = F0.data
+    frames_out = frec
+    # frames_out = F0.data*(dfof_cleaned + 1)
+    fsout = fseq.FStackColl([fseq.from_array(frames_out), fsx])
+    p = ui.Picker(fsout);
+    p.start()
     p0 = ui.Picker(fseq.FStackColl([fsc_x]))
-    p0._ccmap=dict(b=None,i=None,r=None,g=0)
-    bgclim = np.percentile(frames_out,(1,99))
+    p0._ccmap = dict(b=None, i=None, r=None, g=0)
+    bgclim = np.percentile(frames_out, (1, 99))
     bgclim[1] *= 1.25
     p0.clims[0] = bgclim
     p.clims[0] = bgclim
-    #p.clims[1] = (0.025,0.25)
-    mip = np.max(fsx.data,0)
-    p.clims[1] = (args.event_segmentation_threshold, np.mean(mip[mip>0]))
-    print('Testing clims: ',p.clims[1])
-    p._ccmap = dict(b=None,i=None,r=1,g=0)
-    #ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
-    ui.pickers_to_movie([p0, p],nametag+threshold_tag+'-b-detected.mp4', titles=('raw','processed'),
-                        fps=args.fps,
-                        codec=args.codec,
-                        bitrate=args.bitrate,
-                        writer=args.writer)
+    # p.clims[1] = (0.025,0.25)
+    mip = np.max(fsx.data, 0)
+    p.clims[1] = (args.event_segmentation_threshold, np.mean(mip[mip > 0]))
+    print('Testing clims: ', p.clims[1])
+    p._ccmap = dict(b=None, i=None, r=1, g=0)
+    # ui.pickers_to_movie([p],name+'-detected.mp4',writer='ffmpeg')
+    ui.pickers_to_movie([p0, p], nametag + threshold_tag + '-b-detected.mp4', titles=('raw', 'processed'),
+        fps=args.fps,
+        codec=args.codec,
+        bitrate=args.bitrate,
+        writer=args.writer)
 
     print('segmenting and animating events')
-    events = ucats.events.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc_x.data/F0.data-1)
+    events = ucats.events.EventCollection(np.asarray(fsx.data, dtype=np.float32), dfof_frames=fsc_x.data / F0.data - 1)
     if len(events.filtered_coll):
-        events.to_csv(nametag+threshold_tag+'-events.csv')
-    #animate_events(fsc.data, events,name+'-events-new4.mp4')
-    animate_events(frames_out, events,args, nametag+threshold_tag+'-c-events.mp4')
+        events.to_csv(nametag + threshold_tag + '-events.csv')
+    # animate_events(fsc.data, events,name+'-events-new4.mp4')
+    animate_events(frames_out, events, args, nametag + threshold_tag + '-c-events.mp4')
     print('All done')
     if h5f:
         h5f.close()
-    return # from process_record()
+    return  # from process_record()
 
-#todo: move to ucats?
+
+# todo: move to ucats?
 def downsample_stack(frames):
     return np.array([ucats.utils.downsample_image(f) for f in frames], dtype=ucats._dtype_)
 
-#todo: move to ucats?
+
+# todo: move to ucats?
 def upsample_stack(frames, target=None):
     if target is None:
         target = np.array([ucats.utils.upsample_image(f) for f in frames], dtype=ucats._dtype_)
     else:
-        for k,f in enumerate(frames):
+        for k, f in enumerate(frames):
             copy_to_larger_cpad(ucats.utils.upsample_image(f), target[k])
     return target
 
 
-
-#todo: move to ucats?
+# todo: move to ucats?
 def copy_to_larger_cpad(source, destination):
-    nr,nc = source.shape
-    nrd,ncd = destination.shape
-    crop = (slice(min(nr,nrd)), slice(min(nc,ncd)))
+    nr, nc = source.shape
+    nrd, ncd = destination.shape
+    crop = (slice(min(nr, nrd)), slice(min(nc, ncd)))
     destination[crop] = source[crop]
-    if np.any(np.array(destination.shape)>source.shape):
-        destination[nr:,:nc] = source[nr-1,:][None,:]
-        destination[:nr,nc:] = source[:,nc-1][:,None]
-        destination[nr:,nc:] = source[-1,-1]
+    if np.any(np.array(destination.shape) > source.shape):
+        destination[nr:, :nc] = source[nr - 1, :][None, :]
+        destination[:nr, nc:] = source[:, nc - 1][:, None]
+        destination[nr:, nc:] = source[-1, -1]
+
 
 def multiscale_process_frames(frames, twindow, **_process_kwargs):
     frames_ds1 = downsample_stack(frames)
     frames_ds2 = downsample_stack(frames_ds1)
 
-    fdelta2, fb2 = ucats.denoising.block_svd_separate_tslices(frames_ds2, twindow,  **_process_kwargs)
+    fdelta2, fb2 = ucats.denoising.block_svd_separate_tslices(frames_ds2, twindow, **_process_kwargs)
     fdelta2 = upsample_stack(fdelta2, np.zeros_like(frames_ds1))
     fb2 = upsample_stack(fb2, np.zeros_like(frames_ds1))
 
     frames_ds1 = frames_ds1 - fb2 - fdelta2
-    fdelta1, fb1 = ucats.denoising.block_svd_separate_tslices(frames_ds1, twindow,  **_process_kwargs)
+    fdelta1, fb1 = ucats.denoising.block_svd_separate_tslices(frames_ds1, twindow, **_process_kwargs)
 
     fdelta1 = upsample_stack(fdelta1 + fdelta2, np.zeros_like(frames))
     fb1 = upsample_stack(fb1 + fb2, np.zeros_like(frames))
 
-    fdelta, fb = ucats.denoising.block_svd_separate_tslices(frames-fdelta1-fb1, twindow,  **_process_kwargs)
+    fdelta, fb = ucats.denoising.block_svd_separate_tslices(frames - fdelta1 - fb1, twindow, **_process_kwargs)
     return fdelta + fdelta1, fb + fb1
 
 
-
-
-
-def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
+def load_record(name, channel_name='fluo', with_plot=True, ca_channel=1):
     name_low = name.lower()
     read_as_array = True
     if endswith_any(name_low, ('.tif', '.tiff')):
@@ -496,8 +481,8 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
         reader = fseq.from_lsm
         read_as_array = False
     elif endswith_any(name_low, ('.oib')):
-            reader = fseq.from_oif
-            read_as_array = False
+        reader = fseq.from_oif
+        read_as_array = False
     elif endswith_any(name_low, ('.czi',)):
         reader = czifile
     elif endswith_any(name_low, ('.mes',)):
@@ -509,7 +494,7 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
         return
 
     if read_as_array:
-        frames = squeeze(reader.imread(name))
+        frames = np.squeeze(reader.imread(name))
         fs = fseq.from_array(frames)
     else:
         fs = reader(name)
@@ -517,10 +502,10 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
     fs.meta['file_path'] = name
 
     if with_plot:
-        fig,ax = plt.subplots(1,2, gridspec_kw=dict(width_ratios=(1,3)),figsize=(12,3))
-        if isinstance(fs, fseq.FStackColl) and len(fs.stacks)>1:
+        fig, ax = plt.subplots(1, 2, gridspec_kw=dict(width_ratios=(1, 3)), figsize=(12, 3))
+        if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
             fsca = fs.stacks[ca_channel]
-            fsca.meta['channel']=channel_name
+            fsca.meta['channel'] = channel_name
             fsca.meta['file_path'] = name
         else:
             fsca = fs
@@ -529,56 +514,60 @@ def load_record(name, channel_name = 'fluo', with_plot=True,ca_channel=1):
 
         mf = simple_rescale(mf_raw)
         bright_mask = mf > np.percentile(mf, 50)
-        v = array([np.mean(f[bright_mask]) for f in fs])
-        ax[0].imshow(mf,cmap='gray')
+        v = np.array([np.mean(f[bright_mask]) for f in fs])
+        ax[0].imshow(mf, cmap='gray')
         ax[1].plot(v)
-        ax[1].set_title(os.path.basename(name)+': mean fluorescence')
+        ax[1].set_title(os.path.basename(name) + ': mean fluorescence')
         ax[1].set_xlabel('frame #')
         plt.grid(True)
     return fs
 
-imgreg_dispatcher_ = {'affine':imgreg.affine,
-                      'homography':imgreg.homography,
-                      'shifts':imgreg.shifts,
-                      'Greenberg-Kerr':imgreg.greenberg_kerr,
-                      'mslkp':imgreg.mslkp,
-                      'msclg':imgreg.msclg}
+
+imgreg_dispatcher_ = {'affine': imgreg.affine,
+                      'homography': imgreg.homography,
+                      'shifts': imgreg.shifts,
+                      'Greenberg-Kerr': imgreg.greenberg_kerr,
+                      'mslkp': imgreg.mslkp,
+                      'msclg': imgreg.msclg}
+
 
 def apply_warps_and_crop(fs, warps, verbose, njobs):
     mx_warps = ucats.utils.max_shifts(warps, verbose)
     fsc = ofreg.warps.map_warps(warps, fs, njobs=njobs)
-    fsc.meta['file_path']=fs.meta['file_path']
-    fsc.meta['channel'] = fs.meta['channel']+'-sc'
+    fsc.meta['file_path'] = fs.meta['file_path']
+    fsc.meta['channel'] = fs.meta['channel'] + '-sc'
 
-    if isinstance(fs,fseq.FStackColl):
+    if isinstance(fs, fseq.FStackColl):
         for stack in fsc.stacks:
-            stack.data = ucats.utils.crop_by_max_shift(stack.data,warps,mx_warps)
+            stack.data = ucats.utils.crop_by_max_shift(stack.data, warps, mx_warps)
     else:
-        fsc.data = ucats.utils.crop_by_max_shift(fsc.data,warps,mx_warps)
+        fsc.data = ucats.utils.crop_by_max_shift(fsc.data, warps, mx_warps)
     return fsc
 
-from imfun.core import fnutils
-def preprocess_for_registration_1(frames, n_components=None, s_smooth=1., t_smooth=3, background_smooth=30, with_adaptive_filter=False):
+
+def preprocess_for_registration_1(frames, n_components=None, s_smooth=1., t_smooth=3, background_smooth=30,
+                                  with_adaptive_filter=False):
     if n_components is None:
-        n_components = len(frames)//50+5
-    pcf = components.pca.PCA_frames(frames, npc=n_components) # note: number of components may also have to be fixed
+        n_components = len(frames) // 50 + 5
+    pcf = components.pca.PCA_frames(frames, npc=n_components)  # note: number of components may also have to be fixed
     vh_frames = pcf.vh.reshape(-1, *pcf.sh)
-    coords_s = array([ucats.utils.smoothed_medianf(v,0.5,t_smooth) for v in pcf.coords.T]).T
-    processors = [lambda f: ucats.utils.l2spline(f,s_smooth), lambda f: f-ucats.l2spline(f,background_smooth)]
+    coords_s = np.array([ucats.utils.smoothed_medianf(v, 0.5, t_smooth) for v in pcf.coords.T]).T
+    processors = [lambda f: ucats.utils.l2spline(f, s_smooth), lambda f: f - ucats.l2spline(f, background_smooth)]
     if with_adaptive_filter:
         processors = [lambda f,: ucats.utils.adaptive_filter_2d(f, th=1.5, smooth=25, reverse=True,
-                                                         keep_clusters=False,
-                                                         smoother=lambda f_,smooth: ucats.utils.smoothed_medianf(f_,5,smooth))] + processors
+            keep_clusters=False,
+            smoother=lambda f_, smooth: ucats.utils.smoothed_medianf(f_, 5, smooth))] + processors
 
     process_spatial_component = fnutils.flcompose(*processors)
-    pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
+    pcf.vh = np.array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
     pcf.tsvd.components_ = pcf.vh
-    pcf.mean_frame_filtered_  = process_spatial_component(pcf.mean_frame)
-    fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(frames),*pcf.sh) + pcf.mean_frame_filtered_
+    pcf.mean_frame_filtered_ = process_spatial_component(pcf.mean_frame)
+    fsm_filtered = pcf.tsvd.inverse_transform(coords_s).reshape(len(frames), *pcf.sh) + pcf.mean_frame_filtered_
     fsm_filtered = fsm_filtered.astype(ucats._dtype_)
     return fsm_filtered, pcf
 
-def stabilize_motion(fs, args, nametag='',suff=None):
+
+def stabilize_motion(fs, args, nametag='', suff=None):
     "Try to remove motion artifacts by image registratio"
     morphology_channel = args.morphology_channel
     if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
@@ -587,15 +576,14 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         fsm = fs
 
     if suff is None: suff = ''
-    models = [isinstance(m,str) and m or m[0] for m in args.stab_model]
-    suff = suff+'-' + '-'.join(models) + '-ch-%d'%(args.morphology_channel)
-    #warps_name = fs.meta['file_path']+suff+'.npy'
-    #warps_name = nametag+suff+'-warps.npy'
+    models = [isinstance(m, str) and m or m[0] for m in args.stab_model]
+    suff = suff + '-' + '-'.join(models) + '-ch-%d' % (args.morphology_channel)
+    # warps_name = fs.meta['file_path']+suff+'.npy'
+    # warps_name = nametag+suff+'-warps.npy'
     warps_name = '-'.join((nametag, suff, 'warps.npy'))
     print('warps name:', warps_name)
     fsm_filtered = None
     newframes = None
-
 
     # If reusing previously calculating warps and want to re-make the movie
     if os.path.exists(warps_name) and (not args.with_motion_movies):
@@ -603,35 +591,33 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
         return fsc, final_warps
 
-
     if args.verbose:
         print('Filtering data')
 
     # Median filter. TODO: make optional via arguments
-    #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
-    #fsm_filtered = fseq.from_array(fsm[:])
-    #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
-    fsm_filtered = ucats.utils.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
+    # fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
+    # fsm_filtered = fseq.from_array(fsm[:])
+    # fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
+    fsm_filtered = ucats.utils.clip_outliers(fsm[:], 0.05, 99.95).astype(ucats._dtype_)
     # Removing global trend
-    #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
+    # fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
 
+    # fsm.frame_filters = []
+    # if args.verbose > 1: print('done spatial median filter')
 
-    #fsm.frame_filters = []
-    #if args.verbose > 1: print('done spatial median filter')
-
-    from imfun.core import fnutils
     if args.motion_with_pca_denoise:
-        fsm_filtered,pcf = preprocess_for_registration_1(fsm_filtered, with_adaptive_filter=args.motion_with_adaptive_filter)
+        fsm_filtered, pcf = preprocess_for_registration_1(fsm_filtered,
+            with_adaptive_filter=args.motion_with_adaptive_filter)
         pcf = None
-        if args.verbose>1: print('done PCA-based denoising')
-    else: pcf = None
+        if args.verbose > 1: print('done PCA-based denoising')
+    else:
+        pcf = None
 
     fsm_filtered = fsm_filtered.astype(ucats._dtype_)
 
-
-    #fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
-    #fsm_filtered = fseq.from_array(fsm_filtered[:])
-    #if args.verbose>1: print('done flattening')
+    # fsm_filtered.frame_filters.append(lambda f: l2spline(f,1.5)-l2spline(f,30))
+    # fsm_filtered = fseq.from_array(fsm_filtered[:])
+    # if args.verbose>1: print('done flattening')
     if args.verbose: print('Done filtering')
 
     if os.path.exists(warps_name):
@@ -644,8 +630,8 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         warp_history = []
         newframes = fsm_filtered
         for movement_model in operations:
-            if not isinstance(movement_model,str):
-                if len(movement_model)>1:
+            if not isinstance(movement_model, str):
+                if len(movement_model) > 1:
                     model, stab_type, model_params = movement_model
                 else:
                     model, stab_type, model_params = movement_model[0], 'updated_template', {}
@@ -659,15 +645,15 @@ def stabilize_motion(fs, args, nametag='',suff=None):
             template = newframes[:10].mean(0)
             if stab_type == 'template':
                 warps = stackreg.to_template(newframes, template, regfn=imgreg_dispatcher_[model],
-                                             njobs=args.ncpu, **model_params)
+                    njobs=args.ncpu, **model_params)
             elif stab_type == 'updated_template':
                 warps = stackreg.to_updated_template(newframes, template, njobs=args.ncpu,
-                                                     regfn=imgreg_dispatcher_[model], **model_params)
+                    regfn=imgreg_dispatcher_[model], **model_params)
             elif stab_type in ['multi', 'multi-templates', 'pca-templates']:
-                templates, affs = fseq.frame_exemplars_pca_som(newframes,npc=len(fsm)//100+5)
+                templates, affs = fseq.frame_exemplars_pca_som(newframes, npc=len(fsm) // 100 + 5)
                 warps = stackreg.to_templates(newframes, templates, affs, regfn=imgreg_dispatcher_[model],
-                                              njobs=args.ncpu,
-                                              **model_params)
+                    njobs=args.ncpu,
+                    **model_params)
             warp_history.append(warps)
             newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu).astype(ucats._dtype_)
             mx_warps = ucats.utils.max_shifts(warps, args.verbose)
@@ -678,14 +664,14 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         final_warps = ofreg.warps.from_dct_encoded(warps_name)
         # end else
 
-    #mx_warps = ucats.max_shifts(final_warps, args.verbose)
-    #fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
-    #fsc.meta['file_path']=fs.meta['file_path']
-    #fsc.meta['channel'] = fs.meta['channel']+'-sc'
+    # mx_warps = ucats.max_shifts(final_warps, args.verbose)
+    # fsc = ofreg.warps.map_warps(final_warps, fs, njobs=args.ncpu)
+    # fsc.meta['file_path']=fs.meta['file_path']
+    # fsc.meta['channel'] = fs.meta['channel']+'-sc'
 
     fsc = apply_warps_and_crop(fs, final_warps, args.verbose, args.ncpu)
 
-    if isinstance(fs, fseq.FStackColl) and len(fs.stacks)>1:
+    if isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1:
         stacks = [fs.stacks[morphology_channel], fs.stacks[args.ca_channel]]
         stacks_c = [fsc.stacks[morphology_channel], fsc.stacks[args.ca_channel]]
 
@@ -696,125 +682,126 @@ def stabilize_motion(fs, args, nametag='',suff=None):
         fs_show = fs
         fsc_show = fsc
 
-
     if args.with_motion_movies:
         p1 = ui.Picker(fs_show)
         p2 = ui.Picker(fsc_show)
-        clims = ui.harmonize_clims([p1,p2])
+        clims = ui.harmonize_clims([p1, p2])
         p1.clims = clims
         p2.clims = clims
-        pickers_list = [p1,p2]
+        pickers_list = [p1, p2]
 
         if (isinstance(fs, fseq.FStackColl) and len(fs.stacks) > 1) or (fsm_filtered is not None):
             if fsm_filtered is None:
                 p3 = ui.Picker(fs.stacks[morphology_channel])
-                newframes  = fsc.stacks[morphology_channel]
+                newframes = fsc.stacks[morphology_channel]
             else:
                 p3 = ui.Picker(fseq.from_array(fsm_filtered))
                 newframes = ofreg.warps.map_warps(final_warps, fsm_filtered)
-            #print('------------------------------- New frames:', newframes)
+            # print('------------------------------- New frames:', newframes)
             p4 = ui.Picker(fseq.from_array(newframes))
-            #clims = ui.harmonize_clims([p3,p4])
-            clims = [np.percentile(p3.frame_coll.stacks[0].data, (5,99.5))]
+            # clims = ui.harmonize_clims([p3,p4])
+            clims = [np.percentile(p3.frame_coll.stacks[0].data, (5, 99.5))]
             p3.clims = clims
             p4.clims = clims
-            pickers_list.extend([p3,p4])
+            pickers_list.extend([p3, p4])
 
-        ui.pickers_to_movie(pickers_list, nametag+'-a-stabilization-%s.mp4'%suff,
-                            codec=args.codec, writer=args.writer,titles=('raw', 'stabilized'))
+        ui.pickers_to_movie(pickers_list, nametag + '-a-stabilization-%s.mp4' % suff,
+            codec=args.codec, writer=args.writer, titles=('raw', 'stabilized'))
 
-    return fsc, final_warps # from stabilize_motion
+    return fsc, final_warps  # from stabilize_motion
 
 
 def simple_rescale(m):
-    low,high = percentile(m, (1,99))
-    return clip((m-low)/(high-low),0,1)
+    low, high = np.percentile(m, (1, 99))
+    return np.clip((m - low) / (high - low), 0, 1)
+
 
 def prep_mean_frame(fs):
     mfs = [simple_rescale(stack.mean_frame()) for stack in fs.stacks]
     if len(mfs) < 3:
-        z = zeros_like(mfs[0])
-        mfs += [z]*(3-len(mfs))
-    return dstack(mfs[:3])
+        z = np.zeros_like(mfs[0])
+        mfs += [z] * (3 - len(mfs))
+    return np.dstack(mfs[:3])
+
 
 def endswith_any(s, suff_list):
     return reduce(op.or_, (s.endswith(suff) for suff in suff_list))
 
+
 def remove_small_regions(mask, min_size=200):
     labels, nlab = ndimage.label(mask)
-    for i in range(1,nlab+1):
-        cond = labels==i
+    for i in range(1, nlab + 1):
+        cond = labels == i
         if np.sum(cond) < min_size:
-            labels[cond]=0
+            labels[cond] = 0
     return labels > 0
 
-from scipy.ndimage import binary_fill_holes, binary_closing, binary_opening
-def dark_area_mask(mf,phigh=99.5, th_scale=0.1):
-    mask = mf > np.percentile(mf,phigh)*th_scale
+
+def dark_area_mask(mf, phigh=99.5, th_scale=0.1):
+    mask = mf > np.percentile(mf, phigh) * th_scale
     return remove_small_regions(binary_opening(binary_closing(mask)))
 
-from matplotlib import animation
 
 def animate_events(frames, ev_coll, args,
                    movie_name='test.mp4',
                    min_event_show_size=50):
-    pl,ph = percentile(frames, (1,99))
+    pl, ph = np.percentile(frames, (1, 99))
 
     header_add = 0.4
-    figsize=(4.5,4.5+header_add)
-    f,ax = plt.subplots(1,1,figsize=figsize)
+    figsize = (4.5, 4.5 + header_add)
+    f, ax = plt.subplots(1, 1, figsize=figsize)
 
-    L =len(frames)
+    L = len(frames)
     titlestr = 'f: %03d'
 
-
-    out = np.zeros(frames.shape+(4,),dtype=float32)#+avg.reshape((1,)+avg.shape).astype(float32)
+    out = np.zeros(frames.shape + (4,), dtype=np.float32)  # +avg.reshape((1,)+avg.shape).astype(float32)
     for d in ev_coll.filtered_coll:
         k = d['idx']
         o = ev_coll.objs[k]
-        #color = np.random.uniform(size=4)
+        # color = np.random.uniform(size=4)
         color = list(plt.cm.tab20b(np.random.rand()))
         color[-1] = 0.5
         color = tuple(color)
-        cond = ev_coll.labels[o]==k+1
+        cond = ev_coll.labels[o] == k + 1
         if np.sum(cond) > min_event_show_size:
             out[o][cond] = np.asarray(color)
 
-    #np.save(movie_name+'-colored.npy',out)
+    # np.save(movie_name+'-colored.npy',out)
 
-    #out = ma.masked_less_equal(out,0)
+    # out = ma.masked_less_equal(out,0)
 
-
-    hb = ax.imshow(frames[0],clim=(pl,ph),cmap='gray',interpolation='nearest')
+    hb = ax.imshow(frames[0], clim=(pl, ph), cmap='gray', interpolation='nearest')
     hf = ax.imshow(out[0])
-    ts  = ax.set_title(titlestr%(0),size='small')
-    #sb = Rectangle((10,fsg[0].shape[1]-10), scalebar/dx, 3, color='g',ec='none')
-    #ax.add_patch(sb)
-    plt.setp(ax, frame_on=False, xticks=[],yticks=[])
+    ts = ax.set_title(titlestr % (0), size='small')
+    # sb = Rectangle((10,fsg[0].shape[1]-10), scalebar/dx, 3, color='g',ec='none')
+    # ax.add_patch(sb)
+    plt.setp(ax, frame_on=False, xticks=[], yticks=[])
     plt.tight_layout()
 
     def _animate(fk):
         hb.set_data(frames[fk])
         hf.set_data(out[fk])
-        ts.set_text(titlestr%(fk))
-        return [hb,hf]
+        ts.set_text(titlestr % (fk))
+        return [hb, hf]
 
     anim = animation.FuncAnimation(f, _animate, frames=int(L), blit=True)
     Writer = animation.writers.avail[args.writer]
-    w = Writer(fps=args.fps,codec=args.codec,bitrate=args.bitrate)
+    w = Writer(fps=args.fps, codec=args.codec, bitrate=args.bitrate)
     anim.save(movie_name, writer=w)
 
 
 def make_mask(dfof, nsd0):
-    th = ucats.utils.percentile_th_frames(dfof,2.5)
-    mask_simple1 = (dfof1 > th)*(dfof1>0.05)
+    th = ucats.utils.percentile_th_frames(dfof, 2.5)
+    # TODO: Rename dfof1 -> dfof ???
+    mask_simple1 = (dfof1 > th) * (dfof1 > 0.05)
     mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
-    mask_simple1 = np.array([ucats.masks.cleanup_mask(m, 2,5) for m in mask_simple1])
+    mask_simple1 = np.array([ucats.masks.cleanup_mask(m, 2, 5) for m in mask_simple1])
 
-    mask_simple2 = (dfof>nsd0)
+    mask_simple2 = (dfof > nsd0)
     mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
-    mask_simple2 = np.array([ucats.masks.cleanup_mask(m, 3,5) for m in mask_simple2])
+    mask_simple2 = np.array([ucats.masks.cleanup_mask(m, 3, 5) for m in mask_simple2])
     return ucats.masks.select_overlapping(mask_simple2, mask_simple1)
+
 
 if __name__ == '__main__':
     main()
