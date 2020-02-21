@@ -15,10 +15,9 @@ from . import scramble
 from . import utils
 from . import pmt
 
-from .pmt import  estimate_gain_and_offset
+from .pmt import estimate_gain_and_offset
 from .anscombe import Anscombe
 from .utils import clip_outliers, mad_std
-
 
 import numpy as np
 _dtype_ = np.float32
