@@ -3,6 +3,8 @@ from numpy import linalg
 from numpy import arange
 from numpy.linalg import norm, lstsq, svd, eig
 
+from scipy import ndimage as ndi
+
 
 def lambda_star(beta):
     return np.sqrt(2 * (beta+1) + (8*beta) / (beta + 1 + np.sqrt(beta**2 + 14*beta + 1)))
@@ -27,7 +29,7 @@ def svht(sv, sh, sigma=None):
 
 def min_ncomp(sv, sh, sigma=None):
     th = svht(sv, sh, sigma)
-    return sum(sv >= th)
+    return np.sum(sv >= th)
 
 
 def pca_flip_signs(pcf, medianw=None):

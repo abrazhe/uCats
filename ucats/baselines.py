@@ -2,6 +2,8 @@
 baselines -- routines to estimate baseline fluorescence in 1D or TXY data
 """
 
+import sys
+
 import pickle
 
 from functools import partial
@@ -13,6 +15,8 @@ from numpy.linalg import norm, lstsq, svd, eig
 from scipy import ndimage as ndi
 
 from numba import jit
+
+from tqdm.auto import tqdm
 
 import matplotlib.pyplot as plt
 
@@ -190,11 +194,15 @@ def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95):
     return jumps, np.cumsum(shift)
 
 
-def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None):
+def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None, verbose=False):
     f0 = np.zeros(frames.shape, _dtype_)
     fnkw = {} if fnkw is None else fnkw
-    for i in range(niters):
+    iter_range = range(niters)
+    if verbose:
+        iter_range = tqdm(iter_range)
+    for i in iter_range:
         pcf = PCA_frames(frames - f0, 1)
+        pcf = pca_flip_signs(pcf)
         y = pcf.coords[:, 0]
         b = baseline_fn(y, **fnkw)
         pc_baseline = b    #+ percentile_baseline(y-b, smooth=simple_smooth)
