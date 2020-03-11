@@ -13,6 +13,9 @@ from numpy import linalg
 from numpy.linalg import norm, lstsq, svd, eig
 
 from scipy import ndimage as ndi
+from scipy import signal
+
+from sklearn import decomposition as skd
 
 from numba import jit
 
@@ -25,6 +28,9 @@ from imfun.filt.dctsplines import l2spline, l1spline
 from imfun import components
 from imfun.multiscale import mvm
 from imfun.components.pca import PCA_frames
+from imfun import core
+from imfun.core import extrema
+
 
 min_px_size_ = 10
 
@@ -62,9 +68,11 @@ def top_running_min(v):
     return np.maximum(running_min(v), running_min(v[::-1])[::-1])
 
 
-def windowed_runmin(y, wsize=50, wstep=5):
+def windowed_runmin(y, wsize=50, woverlap=25):
     L = len(y)
-    sqs = make_grid((L, ), wsize, wstep)
+    if woverlap >= wsize:
+        woverlap = wsize//2
+    sqs = make_grid((L, ), wsize, woverlap)
     out = (np.max(y) + 0.1) * np.ones(L, _dtype_)
     for sq in sqs:
         sl = sq[0]
@@ -73,10 +81,12 @@ def windowed_runmin(y, wsize=50, wstep=5):
     return out
 
 
-def select_most_stable_branch(variants, window=50, wsize=None):
+def select_most_stable_branch(variants, window=50, woverlap=None):
     L = len(variants[0])
     if wsize is None:
         wsize = max(2, window // 3)
+    if wovelap >= window:
+        woverlap = window//2
     squares = make_grid((L, 1), window, wsize)
     out = np.zeros(L)
     gradients = [np.gradient(np.gradient(v)) for v in variants]
@@ -108,6 +118,31 @@ def l1_baseline2(y, smooth=25, median_window=50):
     b_add = l2spline(vmlow, smooth / 2)
     return b1 + b_add
 
+def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline,  fnkw=None):
+    """Baseline from iterated thresholded smoothing"""
+    if fnkw is None:
+        fnkw = {}
+    ytemp = y
+    ns = mad_std(np.diff(y))
+    for i_ in range(niter):
+        ys = smooth_fn(ytemp, **fnkw)
+        ytemp = np.where(np.abs(y-ys)<ns*th, y, ys)
+    return ys
+
+def iterated_l1_baseline(y, niter=10, th=3, smooth=10):
+    """Baseline from iterated thresholded filtering with L1 spline smoother"""
+    return iterated_smoothing_baseline(y,
+                                       niter=niter, th=th,
+                                       smooth_fn=l1spline,
+                                       fnkw=dict(smooth=smooth))
+
+def iterated_savgol_baseline(y, niter=10, window=299, order=3, th=3, **kwargs):
+    """Baseline from iterated thresholded filtering with Savitzky-Golyaev smoother"""
+    if not window%2: window = window+1 # ensure odd window length
+    return iterated_smoothing_baseline(y,
+                                       niter=niter, th=th,
+                                       smooth_fn=signal.savgol_filter,
+                                       fnkw=dict(window_length=window, polyorder=order,**kwargs))
 
 def percentile_baseline(y,
                         plow=25,
@@ -118,12 +153,9 @@ def percentile_baseline(y,
                         th=3,
                         npad=None):
     L = len(y)
-    if npad is None:
-        npad = percentile_window // 2
-    if npad > 0:
-        ypad = np.pad(y, npad, 'median', stat_length=min(L, 10))
-    else:
-        ypad = y
+
+    npad = percentile_window // 2 if (npad is None) else npad
+    ypad = np.pad(y, npad, 'median', stat_length=min(L, 10)) if npad > 0 else y
 
     b = smoother(ndi.percentile_filter(ypad, plow, percentile_window), out_smooth)
     b = b[npad:L + npad]
@@ -148,7 +180,6 @@ def baseline_with_shifts(y, l1smooth=25):
     return baseline
 
 
-from imfun.core import extrema
 
 
 def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95):
@@ -209,63 +240,6 @@ def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None, ve
         f0 += pcf.inverse_transform(pc_baseline.reshape(-1, 1))
     return f0
 
-
-def process_tmvm(v,
-                 k=3,
-                 level=7,
-                 start_scale=1,
-                 tau_smooth=1.5,
-                 rec_variant=2,
-                 nonnegative=True):
-    """
-    Process temporal signal using MVM and return reconstructions of significant fluorescence elevations
-    """
-    objs = mvm.find_objects(v,
-                            k=k,
-                            level=level,
-                            min_px_size=min_px_size_,
-                            min_nscales=3,
-                            modulus=not nonnegative,
-                            rec_variant=rec_variant,
-                            start_scale=start_scale)
-    if len(objs):
-        if nonnegative:
-            r = np.max(list(map(mvm.embedded_to_full, objs)), 0).astype(v.dtype)
-        else:
-            r = np.sum([mvm.embedded_to_full(o) for o in objs], 0).astype(v.dtype)
-        if tau_smooth > 0:
-            r = l2spline(r, tau_smooth)
-        if nonnegative:
-            r[r < 0] = 0
-    else:
-        r = np.zeros_like(v)
-    return r
-
-
-def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
-    """
-    Estimate time-varying baseline in 1D signal by first finding fast significant
-    changes and removing them, followed by smoothing
-    """
-    rec = process_tmvm(y, k=3, rec_variant=1)
-    if symmetric:
-        rec_minus = -process_tmvm(-y, k=3, rec_variant=1)
-        rec = rec + rec_minus
-    res = y - rec
-    b = l2spline(ndi.percentile_filter(res, plow, smooth_level), smooth_level / 2)
-    rsd = rolling_sd_pd(res - b)
-    return b, rsd, res
-
-
-def tmvm_get_baselines(y, th=3, smooth=100, symmetric=False):
-    """
-    tMVM-based baseline estimation of time-varying baseline with bias correction
-    """
-    b, ns, res = tmvm_baseline(y, smooth_level=smooth, symmetric=symmetric)
-    d = res - b
-    return b + np.median(d[d <= th * ns])    # + bias as constant shift
-
-
 def multi_scale_simple_baseline(y,
                                 plow=50,
                                 th=3,
@@ -273,9 +247,10 @@ def multi_scale_simple_baseline(y,
                                 ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
-    b_estimates = [
-        percentile_baseline(y, plow, th, smooth, ns) for smooth in smooth_levels
-    ]
+
+    b_estimates = [percentile_baseline(y, plow, th, smooth, ns)
+                   for smooth in smooth_levels]
+
     low_env = np.amin(b_estimates, axis=0)
     low_env = np.clip(low_env, np.min(y), np.max(y))
     return l2spline(low_env, np.min(smooth_levels))
@@ -378,67 +353,25 @@ def viz_baseline(v,
     ax.axis('tight')
 
 
-def calculate_baseline(frames,
-                       pipeline=multi_scale_simple_baseline,
-                       stride=2,
-                       patch_size=5,
-                       return_type='array',
-                       pipeline_kw=None):
+
+
+
+def frames_pca_baseline(frames,
+                        npc=None,
+                        pcf=None,
+                        smooth_fn=iterated_savgol_baseline,
+                        fnkw=None):
     """
-    Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence using patch-based processing
+    Use smoothed principal components to estimate time-varying baseline fluorescence F0
     """
-    from imfun import fseq
-    collection = patches.signals_from_array_avg(frames,
-                                                stride=stride,
-                                                patch_size=patch_size)
-    recsb = process_signals_parallel(
-        collection,
-        pipeline=pipeline,
-        pipeline_kw=pipeline_kw,
-        njobs=4,
-    )
-    sh = frames.shape
-    out = patches.combine_weighted_signals(recsb, sh)
-    if return_type.lower() == 'array':
-        return out
-    fsx = fseq.from_array(out)
-    fsx.meta['channel'] = 'baseline'
-    return fsx
-
-
-def calculate_baseline_pca(frames,
-                           smooth=60,
-                           npc=None,
-                           pcf=None,
-                           return_type='array',
-                           smooth_fn=baseline_als_spl):
-    """Use smoothed principal components to estimate time-varying baseline fluorescence F0
-    -- deprecated
-"""
-    from imfun import fseq
-
+    fnkw = dict() if fnkw is None else fnkw
     if pcf is None:
-        if npc is None:
-            npc = len(frames) // 20
+        npc = len(frames) // 20 if npc is None else npc
         pcf = components.pca.PCA_frames(frames, npc=npc)
     pca_flip_signs(pcf)
-    #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
-    if smooth > 0:
-        base_coords = np.array([smooth_fn(v, smooth=smooth) for v in pcf.coords.T]).T
-        #base_coords = np.array([multi_scale_simple_baseline(v) for v in pcf.coords.T]).T
-    else:
-        base_coords = pcf.coords
-    #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
-    #base_coords = np.array([simple_get_baselines(v) for v in pcf.coords.T]).T
-    baseline_frames = pcf.tsvd.inverse_transform(base_coords).reshape(
-        len(pcf.coords), *pcf.sh) + pcf.mean_frame
-    if return_type.lower() == 'array':
-        return baseline_frames
-    #baseline_frames = base_coords.dot(pcf.vh).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
-    fs_base = fseq.from_array(baseline_frames)
-    fs_base.meta['channel'] = 'baseline_pca'
-    return fs_base
-
+    base_coords = np.array([smooth_fn(v, **fnkw) for v in pcf.coords.T]).T
+    baseline_frames = pcf.inverse_transform(base_coords)
+    return baseline_frames
 
 def calculate_baseline_pca_asym(frames,
                                 niter=50,
@@ -480,63 +413,138 @@ def calculate_baseline_pca_asym(frames,
 
     return frames_w
 
+# def calculate_baseline(frames,
+#                        pipeline=multi_scale_simple_baseline,
+#                        stride=2,
+#                        patch_size=5,
+#                        return_type='array',
+#                        pipeline_kw=None):
+#     """
+#     Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence using patch-based processing
+#     """
+#     from imfun import fseq
+#     collection = patches.signals_from_array_avg(frames,
+#                                                 stride=stride,
+#                                                 patch_size=patch_size)
+#     recsb = process_signals_parallel(
+#         collection,
+#         pipeline=pipeline,
+#         pipeline_kw=pipeline_kw,
+#         njobs=4,
+#     )
+#     sh = frames.shape
+#     out = patches.combine_weighted_signals(recsb, sh)
+#     if return_type.lower() == 'array':
+#         return out
+#     fsx = fseq.from_array(out)
+#     fsx.meta['channel'] = 'baseline'
+#     return fsx
 
-## TODO use NMF or NNDSVD instead of PCA?
-from sklearn import decomposition as skd
-from imfun import core
+# def get_baseline_frames(frames,
+#                         smooth=60,
+#                         npc=None,
+#                         baseline_fn=multi_scale_simple_baseline,
+#                         baseline_kw=None):
+#     """
+#     Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence, two-stage processing
+#     (1) global trends via PCA
+#     (2) local corrections by patch-based algorithm
+#     """
+#     from imfun import fseq
+#     base1 = calculate_baseline_pca(frames,
+#                                    smooth=smooth,
+#                                    npc=npc,
+#                                    smooth_fn=multi_scale_simple_baseline)
+#     base2 = calculate_baseline(frames - base1,
+#                                pipeline=baseline_fn,
+#                                pipeline_kw=baseline_kw,
+#                                patch_size=5)
+#     fs_base = fseq.from_array(base1 + base2)
+#     fs_base.meta['channel'] = 'baseline_comb'
+#     return fs_base
 
+# def _calculate_baseline_nmf(frames,
+#                             ncomp=None,
+#                             return_type='array',
+#                             smooth_fn=multi_scale_simple_baseline):
+#     """DOESNT WORK! Use smoothed NMF components to estimate time-varying baseline fluorescence F0"""
+#     from imfun import fseq
+#
+#     fsh = frames[0].shape
+#
+#     if ncomp is None:
+#         ncomp = len(frames) // 20
+#     nmfx = skd.NMF(ncomp, )
+#     signals = nmfx.fit_transform(core.ah.ravel_frames(frames))
+#
+#     #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
+#     if smooth > 0:
+#         base_coords = np.array([smooth_fn(v, smooth=smooth) for v in pcf.coords.T]).T
+#         #base_coords = np.array([multi_scale_simple_baseline for v in pcf.coords.T]).T
+#     else:
+#         base_coords = pcf.coords
+#     #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
+#     #base_coords = np.array([simple_get_baselines(v) for v in pcf.coords.T]).T
+#     baseline_frames = pcf.tsvd.inverse_transform(base_coords).reshape(
+#         len(pcf.coords), *pcf.sh) + pcf.mean_frame
+#     if return_type.lower() == 'array':
+#         return baseline_frames
+#     #baseline_frames = base_coords.dot(pcf.vh).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
+#     fs_base = fseq.from_array(baseline_frames)
+#     fs_base.meta['channel'] = 'baseline_pca'
+#     return fs_base
 
-def _calculate_baseline_nmf(frames,
-                            ncomp=None,
-                            return_type='array',
-                            smooth_fn=multi_scale_simple_baseline):
-    """DOESNT WORK! Use smoothed NMF components to estimate time-varying baseline fluorescence F0"""
-    from imfun import fseq
-
-    fsh = frames[0].shape
-
-    if ncomp is None:
-        ncomp = len(frames) // 20
-    nmfx = skd.NMF(ncomp, )
-    signals = nmfx.fit_transform(core.ah.ravel_frames(frames))
-
-    #base_coords = np.array([smoothed_medianf(v, smooth=smooth1,wmedian=smooth2) for v in pcf.coords.T]).T
-    if smooth > 0:
-        base_coords = np.array([smooth_fn(v, smooth=smooth) for v in pcf.coords.T]).T
-        #base_coords = np.array([multi_scale_simple_baseline for v in pcf.coords.T]).T
-    else:
-        base_coords = pcf.coords
-    #base_coords = np.array([double_scale_baseline(v,smooth1=smooth1,smooth2=smooth2) for v in pcf.coords.T]).T
-    #base_coords = np.array([simple_get_baselines(v) for v in pcf.coords.T]).T
-    baseline_frames = pcf.tsvd.inverse_transform(base_coords).reshape(
-        len(pcf.coords), *pcf.sh) + pcf.mean_frame
-    if return_type.lower() == 'array':
-        return baseline_frames
-    #baseline_frames = base_coords.dot(pcf.vh).reshape(len(pcf.coords),*pcf.sh) + pcf.mean_frame
-    fs_base = fseq.from_array(baseline_frames)
-    fs_base.meta['channel'] = 'baseline_pca'
-    return fs_base
-
-
-def get_baseline_frames(frames,
-                        smooth=60,
-                        npc=None,
-                        baseline_fn=multi_scale_simple_baseline,
-                        baseline_kw=None):
-    """
-    Given a TXY frame timestack estimate slowly-varying baseline level of fluorescence, two-stage processing
-    (1) global trends via PCA
-    (2) local corrections by patch-based algorithm
-    """
-    from imfun import fseq
-    base1 = calculate_baseline_pca(frames,
-                                   smooth=smooth,
-                                   npc=npc,
-                                   smooth_fn=multi_scale_simple_baseline)
-    base2 = calculate_baseline(frames - base1,
-                               pipeline=baseline_fn,
-                               pipeline_kw=baseline_kw,
-                               patch_size=5)
-    fs_base = fseq.from_array(base1 + base2)
-    fs_base.meta['channel'] = 'baseline_comb'
-    return fs_base
+# def process_tmvm(v,
+#                  k=3,
+#                  level=7,
+#                  start_scale=1,
+#                  tau_smooth=1.5,
+#                  rec_variant=2,
+#                  nonnegative=True):
+#     """
+#     Process temporal signal using MVM and return reconstructions of significant fluorescence elevations
+#     """
+#     objs = mvm.find_objects(v,
+#                             k=k,
+#                             level=level,
+#                             min_px_size=min_px_size_,
+#                             min_nscales=3,
+#                             modulus=not nonnegative,
+#                             rec_variant=rec_variant,
+#                             start_scale=start_scale)
+#     if len(objs):
+#         if nonnegative:
+#             r = np.max(list(map(mvm.embedded_to_full, objs)), 0).astype(v.dtype)
+#         else:
+#             r = np.sum([mvm.embedded_to_full(o) for o in objs], 0).astype(v.dtype)
+#         if tau_smooth > 0:
+#             r = l2spline(r, tau_smooth)
+#         if nonnegative:
+#             r[r < 0] = 0
+#     else:
+#         r = np.zeros_like(v)
+#     return r
+#
+#
+# def tmvm_baseline(y, plow=25, smooth_level=100, symmetric=False):
+#     """
+#     Estimate time-varying baseline in 1D signal by first finding fast significant
+#     changes and removing them, followed by smoothing
+#     """
+#     rec = process_tmvm(y, k=3, rec_variant=1)
+#     if symmetric:
+#         rec_minus = -process_tmvm(-y, k=3, rec_variant=1)
+#         rec = rec + rec_minus
+#     res = y - rec
+#     b = l2spline(ndi.percentile_filter(res, plow, smooth_level), smooth_level / 2)
+#     rsd = rolling_sd_pd(res - b)
+#     return b, rsd, res
+#
+#
+# def tmvm_get_baselines(y, th=3, smooth=100, symmetric=False):
+#     """
+#     tMVM-based baseline estimation of time-varying baseline with bias correction
+#     """
+#     b, ns, res = tmvm_baseline(y, smooth_level=smooth, symmetric=symmetric)
+#     d = res - b
+#     return b + np.median(d[d <= th * ns])    # + bias as constant shift

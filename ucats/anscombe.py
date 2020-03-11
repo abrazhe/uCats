@@ -10,9 +10,7 @@ class Anscombe:
 
     @staticmethod
     def inverse_transform(D):
-        if D <= self.vmin:
-            return 0
-        else:
-            Dsq = D**2
-            a = np.sqrt(3/2)
-            return Dsq/4 - 1/8  + 0.25*a/D - 11/8/Dsq + (5/8)*a/Dsq/D
+        D = np.maximum(D, Anscombe.vmin + 2e-16)
+        Dsq = D*D
+        a = np.sqrt(3/2)
+        return Dsq/4 - 1/8  + (a/4)/D - (11/8)/Dsq + a*(5/8)/(Dsq*D)

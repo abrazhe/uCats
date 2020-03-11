@@ -87,8 +87,8 @@ def tsvd_rec_with_weighting(data, rank=None):
 def patch_tsvds_from_frames(frames,
                             patch_ssize=10,
                             patch_tsize=600,
-                            sstride=2,
-                            tstride=300,
+                            soverlap=5,
+                            toverlap=100,
                             min_ncomps=1,
                             do_pruning=_do_pruning_,
                             tsmooth=0,
@@ -99,7 +99,7 @@ def patch_tsvds_from_frames(frames,
 
     Input:
      - frames: a TXY 3D stack of frames (array-like)
-     - stride: spacing between windows (default: 2 px)
+     - overlap: overlap between windows (default: half window)
      - patch_size: spatial size of the window (default: 10 px)
      - min_ncomps: minimal number of components to retain
      - do_pruning: whether to do coefficient pruning based on comparison to shuffled signals
@@ -115,11 +115,13 @@ def patch_tsvds_from_frames(frames,
     #squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
     L = len(frames)
     patch_tsize = min(L, patch_tsize)
-    if tstride > patch_tsize:
-        tstride = patch_tsize // 2
-    tstride = min(L, tstride)
+    if toverlap >= patch_tsize:
+        toverlap = patch_tsize // 2
+    #tstride = min(L, tstride)
+    if toverlap >= patch_tsize:
+        toverlap=patch_tsize//4
     squares = make_grid(frames.shape, (patch_tsize, patch_ssize, patch_ssize),
-                        (tstride, sstride, sstride))
+                        (toverlap, soverlap, soverlap))
     if tsmooth > 0:
         #print('Will smooth temporal components')
         #smoother = lambda v: smoothed_medianf(v, tsmooth*0.5, tsmooth)

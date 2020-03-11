@@ -12,28 +12,28 @@ from imfun.core import coords
 from .globals import _dtype_
 
 
-def make_grid(shape, sizes, strides):
+def make_grid(shape, sizes, overlaps):
     """Make a generator over sets of slices which go through the provided shape
-       by a stride
+       and overlap for the specified amount
     """
     if not np.iterable(sizes):
         sizes = (sizes, ) * len(shape)
-    if not np.iterable(strides):
-        strides = (strides, ) * len(shape)
+    if not np.iterable(overlaps):
+        overlaps = (overlaps, ) * len(shape)
 
-    origins = itt.product(*[[*range(0, dim - size, stride)] + [dim-size]
-                            for (dim, size, stride) in zip(shape, sizes, strides)])
+    origins = itt.product(*[[*range(0, dim-size, size-overlap)] + [dim-size]
+                            for (dim, size, overlap) in zip(shape, sizes, overlaps)])
     squares = tuple(
         tuple(slice(a, a + size) for a, size in zip(o, sizes)) for o in origins)
     return squares
 
 
-def map_patches(fn, data, patch_size=10, stride=1, tslice=slice(None), njobs=1):
+def map_patches(fn, data, patch_size=10, overlap=5, tslice=slice(None), njobs=1):
     """
     Apply some function to a square patch exscized from video
     """
     sh = data.shape[1:]
-    squares = [*map(tuple, make_grid(sh, patch_size, stride))]
+    squares = [*map(tuple, make_grid(sh, patch_size, overlap))]
     if njobs > 1:
         pool = Pool(njobs)
         expl_m = pool.map(fn, (data[(tslice, ) + s] for s in squares))
@@ -121,11 +121,11 @@ def weight_counts(collection, sh):
     return counts
 
 
-def signals_from_array_avg(data, stride=2, patch_size=5):
+def signals_from_array_avg(data, overlap=2, patch_size=5):
     """Convert a TXY image stack to a list of temporal signals (taken from small spatial windows/patches)"""
     d = np.array(data).astype(_dtype_)
     acc = []
-    squares = [*map(tuple, make_grid(d.shape[1:], patch_size, stride))]
+    squares = [*map(tuple, make_grid(d.shape[1:], patch_size, overlap))]
     w = make_weighting_kern(patch_size, 2.5)
     w = w / w.sum()
     #print('w.shape:', w.shape)
