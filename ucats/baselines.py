@@ -134,7 +134,7 @@ def iterated_l1_baseline(y, niter=10, th=3, smooth=10):
     return iterated_smoothing_baseline(y,
                                        niter=niter, th=th,
                                        smooth_fn=l1spline,
-                                       fnkw=dict(smooth=smooth))
+                                       fnkw=dict(s=smooth))
 
 def iterated_savgol_baseline(y, niter=10, window=299, order=3, th=3, **kwargs):
     """Baseline from iterated thresholded filtering with Savitzky-Golyaev smoother"""
@@ -178,9 +178,6 @@ def baseline_with_shifts(y, l1smooth=25):
     trend = l1_baseline2(y - shift, l1smooth)
     baseline = trend + shift
     return baseline
-
-
-
 
 def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95):
     v = ys_tv - ys_l1
