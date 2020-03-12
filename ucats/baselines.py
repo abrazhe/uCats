@@ -83,11 +83,12 @@ def windowed_runmin(y, wsize=50, woverlap=25):
 
 def select_most_stable_branch(variants, window=50, woverlap=None):
     L = len(variants[0])
-    if wsize is None:
-        wsize = max(2, window // 3)
-    if wovelap >= window:
+    if woverlap is None:
+        woverlap = max(2, window // 3)
+
+    if  woverlap >= window:
         woverlap = window//2
-    squares = make_grid((L, 1), window, wsize)
+    squares = make_grid((L, 1), window, woverlap)
     out = np.zeros(L)
     gradients = [np.gradient(np.gradient(v)) for v in variants]
     for sq in squares:
@@ -170,55 +171,64 @@ def percentile_baseline(y,
     return b
 
 
-def baseline_with_shifts(y, l1smooth=25):
-    ys_l1 = l1spline(y, l1smooth)
-    ns = mad_std(y - ys_l1)
-    ys = iterated_tv_chambolle(y, 1 * ns, 5)
-    jump_locs, shift = find_jumps(ys, ys_l1, pre_smooth=1.5)
-    trend = l1_baseline2(y - shift, l1smooth)
+# def baseline_with_shifts(y, l1smooth=25):
+#     ys_l1 = l1spline(y, l1smooth)
+#     ns = mad_std(y - ys_l1)
+#     ys = iterated_tv_chambolle(y, 1 * ns, 5)
+#     jump_locs, shift = find_jumps(ys, ys_l1, pre_smooth=1.5)
+#     trend = l1_baseline2(y - shift, l1smooth)
+#     baseline = trend + shift
+#     return baseline
+
+def baseline_with_shifts(y,l1smooth=25, trend_kw=None,with_plot=False):
+    if trend_kw is None:
+        trend_kw = dict()
+    ys_l1 = l1spline(y, 25)
+    ns = mad_std(y-ys_l1)
+    ys = iterated_tv_chambolle(y, 1*ns, 5)
+    jump_locs, shift = find_jumps(ys,ys_l1, pre_smooth=1.5)
+    #trend = l1_baseline2(y-shift)
+    trend = iterated_savgol_baseline(y-shift, th=1.5, window=199)
     baseline = trend + shift
+    if with_plot:
+        from matplotlib import pyplot as plt
+        plt.figure(figsize=(16,8))
+        plt.plot(y, 'gray')
+        plt.plot(ys,'k')
+        for j in jump_locs:
+            plt.axvline(j, color='pink',lw=0.5)
+        plt.plot(y-shift,lw=0.5)
+        plt.plot(trend, ls='--',color='gray', label='trend estimate')
+        plt.plot(trend+shift,lw=3,c='m',label='baseline estimate')
+        plt.plot(shift,color='steelblue',lw=0.5,label='shift estimate')
+        plt.legend()
     return baseline
 
-def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95):
+
+
+def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95,nhood=10):
     v = ys_tv - ys_l1
     if pre_smooth > 0:
         v = l2spline(v, pre_smooth)
-    #g = np.abs(np.gradient(v))
-    maxima = extrema.locextr(v, refine=False, output='max')
     xfit, yfit, der1, maxima, minima = extrema.locextr(v, refine=False, sort_values=False)
     _, _, _, vvmx, vvmn = extrema.locextr(np.cumsum(v), refine=False, sort_values=False)
     vv_extrema = np.concatenate([vvmx, vvmn])
     g = np.abs(der1)
     ee = np.array(extrema.locextr(g, refine=False, sort_values=False, output='max'))
-    ee = ee[ee[:, 1] >= np.percentile(g, top_gradient)]
+    ee = ee[ee[:,1] >= np.percentile(g, top_gradient)]
     all_extrema = np.concatenate([maxima, minima])
-    extrema_types = {em: (1 if em in maxima else -1) for em in all_extrema}
+    extrema_types = {em : (1 if em in maxima else -1) for em in all_extrema}
     jumps = []
     Lee = len(ee)
-    for k, em in enumerate(ee[:, 0]):
-        if np.any(all_extrema <= em):
-            leftmost = np.max(all_extrema[all_extrema <= em])
-            if k > 0 and leftmost <= ee[k - 1, 0]:
-                continue
-        else:
-            continue
-        if np.any(all_extrema > em):
-            rightmost = np.min(all_extrema[all_extrema > em])
-            if k < Lee - 1 and rightmost > ee[k + 1, 0]:
-                continue
-        else:
-            continue
-        if extrema_types[leftmost] != extrema_types[rightmost]:
-            if np.sign(v[leftmost]) != np.sign(v[rightmost]):
-                if np.min(np.abs(em - vv_extrema)) < 2:
-                    jumps.append(int(em))
+    for k,em in enumerate(ee[:,0]):
+        if np.min(np.abs(em - vv_extrema)) < 2:
+            jumps.append(int(em))
 
     shift = np.zeros(len(v))
     L = len(v)
-    for j in jumps:
-        if j < L - 1:
-            shift[j + 1] = np.mean(ys_tv[j + 1:min(j + 6, L)]) - np.mean(
-                ys_tv[max(0, j - 5):j])
+    for k,j in enumerate(jumps):
+        if j < L-1:
+            shift[j+1] = np.mean(ys_tv[j+1:min(j+nhood+1,L)]) - np.mean(ys_tv[max(0,j-nhood):j])
     return jumps, np.cumsum(shift)
 
 
