@@ -15,9 +15,6 @@ from .block_svd_denoise_and_separate_ import block_svd_separate_tslices, block_s
 from . import patch_svd_double_stage
 from .patch_svd_double_stage import patch_svd_denoise_frames
 from .patch_svd_double_stage import second_stage_svd
-from .patch_svd_double_stage import project_from_tsvd_patches
-from .patch_svd_double_stage import patch_tsvds_from_frames
-
 
 def _patch_denoise_percentiles(data,
                                stride=2,

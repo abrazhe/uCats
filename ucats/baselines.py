@@ -34,14 +34,22 @@ from imfun.core import extrema
 
 min_px_size_ = 10
 
+from .globals import _dtype_
+
+from .decomposition import pca_flip_signs, SVD_patch
+from .decomposition import patch_tsvd_transform, patch_tsvd_inverse_transform
+
+
 from .patches import make_grid
+
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
 from .utils import mad_std
 from .utils import process_signals_parallel
 from .utils import iterated_tv_chambolle
-from .decomposition import pca_flip_signs
-from . import patches
-from .globals import _dtype_
+
+
+
+
 
 
 def store_baseline_pickle(name, frames, ncomp=50):
@@ -130,20 +138,46 @@ def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline,  fnkw=Non
         ytemp = np.where(np.abs(y-ys)<ns*th, y, ys)
     return ys
 
-def iterated_l1_baseline(y, niter=10, th=3, smooth=10):
-    """Baseline from iterated thresholded filtering with L1 spline smoother"""
-    return iterated_smoothing_baseline(y,
-                                       niter=niter, th=th,
-                                       smooth_fn=l1spline,
-                                       fnkw=dict(smooth=smooth))
+def iterated_smoothing_baseline2(y, niter=10, th=1.5,
+                                 noise_sigma = None,
+                                 asym=False,
+                                 smooth_fn=l1spline, smooth_fn2=None,
+                                 fnkw=None, fnkw2=None):
 
-def iterated_savgol_baseline(y, niter=10, window=299, order=3, th=3, **kwargs):
-    """Baseline from iterated thresholded filtering with Savitzky-Golyaev smoother"""
-    if not window%2: window = window+1 # ensure odd window length
-    return iterated_smoothing_baseline(y,
-                                       niter=niter, th=th,
-                                       smooth_fn=signal.savgol_filter,
-                                       fnkw=dict(window_length=window, polyorder=order,**kwargs))
+    fnkw = dict() if fnkw is None else fnkw
+    fnkw2 = fnkw if fnkw2 is None else fnkw2
+    smooth_fn2 = smooth_fn if smooth_fn2 is None else smooth_fn2
+
+    ytemp = y
+
+    ns = mad_std(np.diff(y)) if (noise_sigma is None) else noise_sigma
+
+    for i_ in range(niter):
+        ys = smooth_fn(ytemp, **fnkw)
+        ys2 = smooth_fn2(ytemp, **fnkw2)
+        cond = (y > ys) if asym else (np.abs(y-ys) > ns*th)
+        ytemp = np.where(cond, ys2, y)
+    return ys
+
+def iterated_l1_baseline(y, smooth1=10, smooth2=25, **kwargs):
+    fnkw1,fnkw2 = (dict(s=s) for s in (smooth1,smooth2))
+    return iterated_smoothing_baseline2(y,smooth_fn=l1spline, fnkw=fnkw1, fnkw2=fnkw2, **kwargs)
+
+def make_odd(n):
+    return n + n%2 - 1
+
+def iterated_savgol_baseline2(y, window=99, window2=None, order=3, order2=3 , post_smooth=5,**kwargs):
+
+    window = make_odd(np.minimum(len(y)-1, window))
+    window2 = window*4-1 if not window2 else window2
+    window2 = make_odd(np.minimum(window2,len(y)-1))
+
+    b =  iterated_smoothing_baseline2(y,
+                                      smooth_fn=signal.savgol_filter,
+                                      fnkw=dict(window_length=window, polyorder=order),
+                                      fnkw2=dict(window_length=window2, polyorder=order2),
+                                      **kwargs)
+    return l2spline(b, post_smooth)
 
 def percentile_baseline(y,
                         plow=25,
@@ -359,14 +393,10 @@ def viz_baseline(v,
     ax.plot(tv, b, 'teal', lw=1)
     ax.axis('tight')
 
-
-
-
-
 def frames_pca_baseline(frames,
                         npc=None,
                         pcf=None,
-                        smooth_fn=iterated_savgol_baseline,
+                        smooth_fn=iterated_savgol_baseline2,
                         fnkw=None):
     """
     Use smoothed principal components to estimate time-varying baseline fluorescence F0
@@ -378,6 +408,25 @@ def frames_pca_baseline(frames,
     pca_flip_signs(pcf)
     base_coords = np.array([smooth_fn(v, **fnkw) for v in pcf.coords.T]).T
     baseline_frames = pcf.inverse_transform(base_coords)
+    return baseline_frames
+
+def patch_tsvd_baseline(frames,
+                        ssize=32,
+                        soverlap=4,
+                        max_ncomps=5,
+                        smooth_fn=iterated_savgol_baseline2,
+                        fnkw=None):
+    """
+    Use smoothed principal components in spatial windows to estimate time-varying baseline fluorescence F0
+    """
+    if fnkw is None:
+        fnkw = dict(window=100, window2=250, order=3,order2=3, th=1.5)
+    svd_patches = patch_tsvd_transform(frames, ssize, len(frames), soverlap=soverlap, max_ncomps=max_ncomps)
+    out_coll = []
+    for p in tqdm(svd_patches, desc='doing baselines'):
+        baselines = np.array([iterated_savgol_baseline2(v,**fnkw) for v in p.signals])
+        out_coll.append(SVD_patch(baselines, *p[1:]))
+    baseline_frames =  patch_tsvd_inverse_transform(out_coll, frames.shape)
     return baseline_frames
 
 def calculate_baseline_pca_asym(frames,
