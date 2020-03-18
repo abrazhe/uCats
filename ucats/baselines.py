@@ -43,7 +43,7 @@ from .decomposition import patch_tsvd_transform, patch_tsvd_inverse_transform
 from .patches import make_grid
 
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
-from .utils import mad_std
+from .utils import mad_std, make_odd
 from .utils import process_signals_parallel
 from .utils import iterated_tv_chambolle
 
@@ -161,21 +161,28 @@ def iterated_smoothing_baseline2(y, niter=10, th=1.5,
 
 def iterated_l1_baseline(y, smooth1=10, smooth2=25, **kwargs):
     fnkw1,fnkw2 = (dict(s=s) for s in (smooth1,smooth2))
-    return iterated_smoothing_baseline2(y,smooth_fn=l1spline, fnkw=fnkw1, fnkw2=fnkw2, **kwargs)
+    return iterated_smoothing_baseline2(y,
+                                        smooth_fn=l1spline,
+                                        fnkw=fnkw1, fnkw2=fnkw2,
+                                        **kwargs)
 
-def make_odd(n):
-    return n + n%2 - 1
 
-def iterated_savgol_baseline2(y, window=99, window2=None, order=3, order2=3 , post_smooth=5,**kwargs):
+def iterated_savgol_baseline2(y,
+                              window=99, window2=None,
+                              order=3, order2=3 ,
+                              post_smooth=5,
+                              **kwargs):
 
     window = make_odd(np.minimum(len(y)-1, window))
     window2 = window*4-1 if not window2 else window2
     window2 = make_odd(np.minimum(window2,len(y)-1))
 
+    fnkw1,fnkw2 = (dict(window_length=w,polyorder=k)
+                   for w,k in zip((window, window2), (order, order2))
+
     b =  iterated_smoothing_baseline2(y,
                                       smooth_fn=signal.savgol_filter,
-                                      fnkw=dict(window_length=window, polyorder=order),
-                                      fnkw2=dict(window_length=window2, polyorder=order2),
+                                      fnkw=fnkw1, fnkw2=fnkw2,
                                       **kwargs)
     return l2spline(b, post_smooth)
 
