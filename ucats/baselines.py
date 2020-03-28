@@ -36,7 +36,7 @@ min_px_size_ = 10
 from .globals import _dtype_
 
 from .decomposition import pca_flip_signs, SVD_patch
-from .decomposition import patch_tsvd_transform, patch_tsvd_inverse_transform
+from .decomposition import Windowed_tSVD
 
 from .patches import make_grid
 
@@ -183,7 +183,7 @@ def iterated_savgol_baseline2(y,
     window2 = make_odd(np.minimum(window2, len(y) - 1))
 
     fnkw1,fnkw2 = (dict(window_length=w,polyorder=k)
-                   for w,k in zip((window, window2), (order, order2))
+                   for w,k in zip((window, window2), (order, order2)))
 
     b =  iterated_smoothing_baseline2(y,
                                       smooth_fn=signal.savgol_filter,
@@ -442,16 +442,16 @@ def patch_tsvd_baseline(frames,
     """
     if fnkw is None:
         fnkw = dict(window=100, window2=250, order=3, order2=3, th=1.5)
-    svd_patches = patch_tsvd_transform(frames,
-                                       ssize,
-                                       len(frames),
-                                       soverlap=soverlap,
-                                       max_ncomps=max_ncomps)
+    wtsvd = Windowed_tSVD(patch_ssize=ssize,
+                          toverlap=len(frames),
+                          soverlap=soverlap,
+                          max_ncomps=max_ncomps)
+    svd_patches = wtsvd.fit_transform(frames)
     out_coll = []
     for p in tqdm(svd_patches, desc='doing baselines'):
         baselines = np.array([iterated_savgol_baseline2(v, **fnkw) for v in p.signals])
-        out_coll.append(SVD_patch(baselines, *p[1:]))
-    baseline_frames = patch_tsvd_inverse_transform(out_coll, frames.shape)
+        out_coll.append(p._replace(signals=baselines))
+    baseline_frames = wtsvd.inverse_transform(out_coll)
     return baseline_frames
 
 

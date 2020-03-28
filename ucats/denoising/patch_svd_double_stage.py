@@ -14,8 +14,7 @@ from imfun import components
 
 from ..cluster import sort_by_clust, clustering_dispatcher_
 
-from ..decomposition import (min_ncomp, SVD_patch, Windowed_tSVD, patch_tsvd_transform,
-                             patch_tsvd_inverse_transform)
+from ..decomposition import (min_ncomp, SVD_patch, Windowed_tSVD)
 
 from ..patches import make_grid, slice_overlaps_square
 
