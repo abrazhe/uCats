@@ -16,6 +16,9 @@ from .masks import threshold_object_size
 from skimage.restoration import denoise_tv_chambolle
 
 
+def make_odd(n):
+    return n + n%2 - 1
+
 def iterated_tv_chambolle(y, weight, niters=5):
     ys = np.copy(y)
     for i in range(niters):

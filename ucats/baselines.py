@@ -41,7 +41,7 @@ from .decomposition import patch_tsvd_transform, patch_tsvd_inverse_transform
 from .patches import make_grid
 
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
-from .utils import mad_std
+from .utils import mad_std, make_odd
 from .utils import process_signals_parallel
 from .utils import iterated_tv_chambolle
 
@@ -169,9 +169,6 @@ def iterated_l1_baseline(y, smooth1=10, smooth2=25, **kwargs):
                                         **kwargs)
 
 
-def make_odd(n):
-    return n + n%2 - 1
-
 
 def iterated_savgol_baseline2(y,
                               window=99,
@@ -185,11 +182,13 @@ def iterated_savgol_baseline2(y,
     window2 = window*4 - 1 if not window2 else window2
     window2 = make_odd(np.minimum(window2, len(y) - 1))
 
-    b = iterated_smoothing_baseline2(y,
-                                     smooth_fn=signal.savgol_filter,
-                                     fnkw=dict(window_length=window, polyorder=order),
-                                     fnkw2=dict(window_length=window2, polyorder=order2),
-                                     **kwargs)
+    fnkw1,fnkw2 = (dict(window_length=w,polyorder=k)
+                   for w,k in zip((window, window2), (order, order2))
+
+    b =  iterated_smoothing_baseline2(y,
+                                      smooth_fn=signal.savgol_filter,
+                                      fnkw=fnkw1, fnkw2=fnkw2,
+                                      **kwargs)
     return l2spline(b, post_smooth)
 
 
@@ -227,7 +226,6 @@ def percentile_baseline(y,
 #     trend = l1_baseline2(y - shift, l1smooth)
 #     baseline = trend + shift
 #     return baseline
-
 
 def baseline_with_shifts(y, l1smooth=25, trend_kw=None, with_plot=False):
     if trend_kw is None:
