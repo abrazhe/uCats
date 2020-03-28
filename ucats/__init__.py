@@ -2,6 +2,7 @@
 μCats -- a set of routines for detection and analysis of Ca-transients
 """
 
+from . import cluster
 from . import denoising
 from . import decomposition
 from . import baselines

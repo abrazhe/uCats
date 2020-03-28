@@ -1,31 +1,29 @@
 import numpy as np
 from numpy import linalg
 
-from sklearn import cluster as skcluster
+from numba import jit
+
+from sklearn import cluster as skclust
 
 import gzip
 import pickle
-
-from umap import UMAP
-
 
 from tqdm.auto import tqdm
 
 from imfun import components
 
+from ..cluster import sort_by_clust, clustering_dispatcher_
 
-from ..decomposition import (min_ncomp,
-                             SVD_patch,
-                             patch_tsvd_transform,
+from ..decomposition import (min_ncomp, SVD_patch, Windowed_tSVD, patch_tsvd_transform,
                              patch_tsvd_inverse_transform)
 
 from ..patches import make_grid, slice_overlaps_square
 
 from ..globals import _dtype_
+
 from ..utils import mad_std
 
-
-_nclusters_ = 32
+_nclusters_ = 16
 
 # TODO:
 # - [ ] Exponential-family PCA
@@ -35,103 +33,6 @@ _nclusters_ = 32
 
 from skimage.restoration import denoise_tv_chambolle
 
-import sklearn.cluster as skcluster
-
-# TODO: -- move the clustering code somewhere in ucats or imfun
-from numba import jit
-@jit
-def calc_coincidents(labels):
-    Npts = len(labels)
-    out = np.zeros((Npts,Npts))
-    for i in range(Npts):
-        for j in range(i,Npts):
-            out[i,j] = labels[i] == labels[j]
-    return out
-
-class DumbConsensusClusterer:
-
-    def __init__(self, n_clusters, merge_threshold=0.85, n_clusterers=25, min_cluster_size=10, min_overlap=5):
-        self.n_clusters = n_clusters
-        self.merge_threshold = merge_threshold
-        self.n_clusterers = n_clusterers
-        self.min_cluster_size=min_cluster_size
-        self.min_overlap = min_overlap
-
-    def fit_predict(self, X):
-        lbls = []
-        for i in range(self.n_clusterers):
-            clusterer = skcluster.MiniBatchKMeans(n_clusters=self.n_clusters*2)
-            l = clusterer.fit_predict(X)
-            lbls.append(l)
-        lbls = np.array(lbls)
-        return self.cluster_ensembles(lbls)
-
-    def calc_consensus_matrix(self, labels):
-        Npts = len(labels[0])
-        out = np.zeros((Npts,Npts))
-        for lab in labels:
-            out += calc_coincidents(lab)
-        return out/len(labels)
-
-    def cluster_ensembles(self, labels,):
-        clusters = []
-        Cm = self.calc_consensus_matrix(labels)
-        Npts =  len(Cm)
-        for i in range(Npts):
-            row = Cm[i]
-            candidates = set([j for j in range(i,Npts) if (row[j]>=self.merge_threshold)])
-            if not len(candidates):
-                continue
-            if not len(clusters):
-                clusters.append(set(candidates))
-            else:
-                overlaps = [c for c in clusters if len(c.intersection(candidates)) >= self.min_overlap]
-                non_overlapping = [c for c in clusters if not c in overlaps]
-                if len(overlaps):
-                    for c in overlaps:
-                        candidates.update(c)
-                    clusters = [candidates] + non_overlapping
-                else:
-                    clusters.append(candidates)
-
-        clusters = [c for c in clusters if len(c) >= self.min_cluster_size]
-
-        out_labels = np.zeros(Npts)
-        for k,cx in enumerate(clusters):
-            for i in cx:
-                out_labels[i] = k + 1
-        return out_labels
-
-
-import hdbscan
-
-class UMAP_Preprocessed:
-    def __init__(self, *args, **kwargs):
-        self.preprocessor = UMAP(n_neighbors=30, min_dist=0, n_components=2)
-        #self.clusterer = skcluster.DBSCAN(**kwargs) # this is not *H*dbscan, is it?
-        #self.clusterer = hdbscan.HDBSCAN()
-    def fit_predict(self, X):
-        X = self.preprocessor.fit_transform(X)
-        return self.clusterer.fit_predict(X)
-
-# this can be done better ..., e.g. using decorators for
-# fit_predict methods for existing  clustering objects
-class UMAP_MiniBatchKMeans(UMAP_Preprocessed):
-    def __init__(self,nclust):
-        super(UMAP_MiniBatchKMeans, self).__init__()
-        self.clusterer = skcluster.MiniBatchKMeans(nclust)
-
-class UMAP_KMeans(UMAP_Preprocessed):
-    def __init__(self, nclust):
-        super(UMAP_KMeans, self).__init__()
-        self.clusterer = skcluster.KMeans(nclust)
-
-
-class UMAP_HDBSCAN(UMAP_Preprocessed):
-    def __init__(self, *args, **kwargs):
-        super(UMAP_HDBSCAN, self).__init__()
-        self.clusterer = hdbscan.HDBSCAN()
-
 
 def separable_iterated_tv_chambolle(im, sigma_x=1, sigma_y=1, niters=5):
     if (sigma_x <= 0) and (sigma_y <= 0):
@@ -139,11 +40,89 @@ def separable_iterated_tv_chambolle(im, sigma_x=1, sigma_y=1, niters=5):
     im_w = np.copy(im)
 
     for i in range(niters):
-        if sigma_y > 0 :
-            im_w = np.array([denoise_tv_chambolle(cv, mad_std(cv)*sigma_y) for cv in im_w.T]).T # columns
+        if sigma_y > 0:
+            im_w = np.array(
+                [denoise_tv_chambolle(cv,
+                                      mad_std(cv) * sigma_y)
+                 for cv in im_w.T]).T    # columns
         if sigma_x > 0:
-            im_w = np.array([denoise_tv_chambolle(rv, mad_std(rv)*sigma_x) for rv in im_w])     # rows
+            im_w = np.array(
+                [denoise_tv_chambolle(rv,
+                                      mad_std(rv) * sigma_x) for rv in im_w])    # rows
     return im_w
+
+
+def separable_iterated_tv_chambolle2(im, sigma_x=1, sigma_y=1, niters=5):
+    if (sigma_x <= 0) and (sigma_y <= 0):
+        return im
+    nr, nc = im.shape
+    im_w = np.copy(im)
+    for i in range(niters):
+        # columns
+        if sigma_y > 0:
+            for c in range(nc):
+                cv = im_w[:, c]
+                #yd = cv-signal.savgol_filter(cv, ucats.baselines.make_odd(len(cv)), 3)
+                ns = mad_std(np.diff(cv))
+                im_w[:, c] = denoise_tv_chambolle(cv, ns * sigma_y)
+        # rows
+        if sigma_x > 0:
+            for r in range(nr):
+                rv = im_w[r, :]
+                #yd = rv-signal.savgol_filter(rv, ucats.baselines.make_odd(len(rv)), 3)
+                ns = mad_std(np.diff(rv))
+                im_w[r, :] = denoise_tv_chambolle(rv, ns * sigma_x)
+    return im_w
+
+
+@jit
+def unsort(v, ksort):
+    #z = np.arange(len(v))
+    out = np.zeros(v.shape)
+    for i, k in enumerate(ksort):
+        out[k] = v[i]
+    return out
+
+
+def windowed_flat_tv(img,
+                     window=50,
+                     overlap=25,
+                     samples_per_cluster=10,
+                     mode='sorted',
+                     tv_sigma=1,
+                     tv_niters=3):
+    nr, nc = img.shape
+    counts = np.zeros(img.shape)
+    out = np.zeros(img.shape)
+    tslices = [x[0] for x in make_grid((nc, 1), window, overlap)]
+    tslices = [(slice(None), t) for t in tslices]
+
+    if samples_per_cluster is not None:
+        nclust = np.int(np.ceil(nr / samples_per_cluster))
+    else:
+        nclust = None
+
+    for tslice in tslices:
+        patch = img[tslice]
+
+        if mode == 'sorted':
+            ksort = sort_by_clust(patch, output='sorting')
+            sorted_patch = patch[ksort]
+            sorted_patch2 = separable_iterated_tv_chambolle2(sorted_patch,
+                                                             sigma_x=0,
+                                                             sigma_y=tv_sigma,
+                                                             niters=tv_niters)
+            out[tslice] += unsort(sorted_patch2, ksort)
+        elif mode == 'means':
+            labels = sort_by_clust(patch, nclust, output='labels')
+            patch_approx = np.zeros(patch.shape)
+            for i in np.unique(labels):
+                patch_approx[labels == i] = patch[labels == i].mean(0)
+            out[tslice] += patch_approx
+        counts[tslice] += 1
+    out = out / counts
+    return out
+
 
 # TODO: decide which clustering algorithm to use.
 #       candidates:
@@ -155,167 +134,167 @@ def separable_iterated_tv_chambolle(im, sigma_x=1, sigma_y=1, niters=5):
 #       - clustering algorithm should be made a parameter
 # TODO: good crossfade and smaller overlap
 
-def second_stage_svd(collection,
-                     fsh,
-                     n_clusters=_nclusters_,
-                     Nhood=100,
-                     clustering_algorithm='MiniBatchKmeans',
-                     mode='cluster',
-                     **kwargs):
-    out_signals = [np.zeros(c.signals.shape,_dtype_) for c in collection]
-    out_counts = np.zeros(len(collection), np.int) # make crossafade here
-    squares = make_grid(fsh[1:], Nhood, Nhood//2)
-    tstarts = set(c.sq[0].start for c in collection)
-    tsquares = [(t, sq) for t in tstarts for sq in squares]
-    clustering_dispatcher = {
-        'AgglomerativeWard'.lower(): lambda nclust : skcluster.AgglomerativeClustering(nclust),
-        'KMeans'.lower() : lambda nclust: skcluster.KMeans(nclust),
-        'MiniBatchKMeans'.lower(): lambda nclust: skcluster.MiniBatchKMeans(nclust),
-        'UMAP_DBSCAN'.lower(): lambda nclust: UMAP_HDBSCAN(min_samples=15),
-        'UMAP_KMeans'.lower(): lambda nclust: UMAP_KMeans(nclust),
-        'UMAP_MiniBatchKMeans'.lower(): lambda nclust: UMAP_MiniBatchKMeans(nclust),
-        'ConsensusKMeans'.lower(): lambda nclust: DumbConsensusClusterer(nclust)
-    }
-    def _is_local_patch(p, sqx):
-        t0, sq = sqx
-        tstart = p[0].start
-        psq = p[1:]
-        return (tstart==t0) & (slice_overlaps_square(psq, sq))
 
-    for sqx in tqdm(tsquares, desc='Going through larger squares'):
-        signals = [c.signals for c in collection if _is_local_patch(c.sq, sqx)]
-        if not(len(signals)):
-            print(sqx)
-            for c in collection:
-                print(sqx, c.sq, _is_local_patch(c.sq, sqx))
+def process_flat_collection(samples,
+                            n_clusters=_nclusters_,
+                            clustering_algorithm='MiniBatchKMeans',
+                            mode='cluster-svd',
+                            **kwargs):
 
-        nclust = min(n_clusters, len(signals))
+    nclust = min(n_clusters, len(samples))
+    samples_approx = np.zeros(samples.shape, _dtype_)
 
-        signals = np.vstack(signals)
+    clust = clustering_dispatcher_[clustering_algorithm.lower()](nclust)
+    if clustering_algorithm == "MiniBatchKMeans".lower():
+        clust.batch_size = min(clust.batch_size, len(samples))
+        clust.init_size = max(3 * nclust, clust.init_size)
 
-        if mode.lower() == 'flatTV'.lower():
-            mapper1d = UMAP(n_components=1, n_neighbors=30,min_dist=0,metric='euclidean')
-            X1d = mapper1d.fit_transform(signals)[:,0]
-            ksort = np.argsort(X1d)
-            img = signals[ksort]
-            ns = mad_std(img) # questionable
-            # only do along Y axis (between signals, not along time)
-            # rather slow though
-            # niters should be a parameter
-            img2 = separable_iterated_tv_chambolle(img.T, sigma_x=2, sigma_y=0, niters=5).T
-            sqx_approx = np.zeros(signals.shape, _dtype_)
-            for i,k in enumerate(ksort):
-                sqx_approx[k] = img2[i]
-        elif mode.lower() == 'cluster':
-            # number of signals can be different in some patches due to boundary conditions
-            clust = clustering_dispatcher[clustering_algorithm.lower()](nclust)
-            if clustering_algorithm == "MiniBatchKMeans".lower():
-                clust.batch_size  = min(clust.batch_size, len(signals))
-
-            labels = clust.fit_predict(signals)
-
-            sqx_approx = np.zeros(signals.shape, _dtype_)
-            for i in np.unique(labels):
-                group = labels==i
-                u,s,vh = linalg.svd(signals[group],False)
-                r = min_ncomp(s, (u.shape[0],vh.shape[1]))+1
-                u = u[:,:r]
-                #w = weight_components(all_svd_signals[group],vh,r)
-                approx = u@np.diag(s[:r])@vh[:r]
-                sqx_approx[group] = approx
+    if 'flattv' in mode.lower():
+        out_kind = 'sorted' if 'sort' in mode.lower() else 'means'
+        tv_sigma = kwargs['tv_sigma'] if 'tv_sigma' in kwargs else 1
+        tv_niters = kwargs['tv_niters'] if 'tv_niters' in kwargs else 3
+        if 'tv_samples_per_cluster' in kwargs:
+            samples_per_cluster = kwargs['tv_samples_per_cluster']
         else:
-            raise ValueError(f"Unknown mode {mode}, use 'flatTV' or 'cluster'")
-        kstart=0
-        for i,c in enumerate(collection):
-            if _is_local_patch(c.sq, sqx):
-                l =len(c.signals)
-                out_signals[i] += sqx_approx[kstart:kstart+l]
-                out_counts[i] += 1
-                kstart+=l
-    return [SVD_patch(x/(1e-7+cnt), *c[1:])
-            for c,x,cnt in zip(collection, out_signals, out_counts)]
-
-# def second_stage_svd(collection,
-#                      fsh,
-#                      n_clusters=_nclusters_,
-#                      Nhood=100,
-#                      clustering_algorithm='AgglomerativeWard'):
-#     out_signals = [np.zeros(c.signals.shape, _dtype_) for c in collection]
-#     out_counts = np.zeros(len(collection), np.int)    # make crossafade here
-#     squares = make_grid(fsh[1:], Nhood, Nhood // 2)
-#     tstarts = set(c.sq[0].start for c in collection)
-#     tsquares = [(t, sq) for t in tstarts for sq in squares]
-#     clustering_dispatcher = {
-#         'AgglomerativeWard'.lower():
-#         lambda nclust: skcluster.AgglomerativeClustering(nclust),
-#         'KMeans'.lower(): lambda nclust: skcluster.KMeans(nclust),
-#         'MiniBatchKMeans'.lower(): lambda nclust: skcluster.MiniBatchKMeans(nclust)
-#     }
-#
-#     def _is_local_patch(p, sqx):
-#         t0, sq = sqx
-#         tstart = p[0].start
-#         psq = p[1:]
-#         return (tstart == t0) & (slice_overlaps_square(psq, sq))
-#
-#     for sqx in tqdm(tsquares, desc='Going through larger squares'):
-#         #print(sqx, collection[0][3], slice_starts_in_square(collection[0][3], sqx))
-#         signals = [c.signals for c in collection if _is_local_patch(c.sq, sqx)]
-#         if not (len(signals)):
-#             print(sqx)
-#             for c in collection:
-#                 print(sqx, c.sq, _is_local_patch(c.sq, sqx))
-#         nclust = min(n_clusters, len(signals))
-#         signals = np.vstack(signals)
-#         # number of signals can be different in some patches due to boundary conditions
-#         clust = clustering_dispatcher[clustering_algorithm.lower()](nclust)
-#         if clustering_algorithm == "MiniBatchKMeans".lower():
-#             clust.batch_size = min(clust.batch_size, len(signals))
-#         labels = clust.fit_predict(signals)
-#         sqx_approx = np.zeros(signals.shape, _dtype_)
-#         for i in np.unique(labels):
-#             group = labels == i
-#             u, s, vh = linalg.svd(signals[group], False)
-#             r = min_ncomp(s, (u.shape[0], vh.shape[1])) + 1
-#             #w = weight_components(all_svd_signals[group],vh,r)
-#             approx = u[:, :r] @ np.diag(s[:r]) @ vh[:r]
-#             sqx_approx[group] = approx
-#         kstart = 0
-#         for i, c in enumerate(collection):
-#             if _is_local_patch(c.sq, sqx):
-#                 l = len(c.signals)
-#                 out_signals[i] += sqx_approx[kstart:kstart + l]
-#                 out_counts[i] += 1
-#                 kstart += l
-#     return [SVD_patch(x / (1e-7+cnt), *c[1:])
-#             for c, x, cnt in zip(collection, out_signals, out_counts)]
+            samples_per_cluster = np.int(np.round(len(samples) / nclust))
+        samples_approx = windowed_flat_tv(samples,
+                                          mode=out_kind,
+                                          samples_per_cluster=samples_per_cluster,
+                                          tv_sigma=tv_sigma,
+                                          tv_niters=tv_niters)
+    elif 'cluster' in mode.lower():
+        if nclust > 1:
+            labels = clust.fit_predict(samples)
+        else:
+            labels = np.ones(len(samples))
+        if 'svd' in mode.lower():
+            for i in np.unique(labels):
+                group = labels == i
+                u, s, vh = linalg.svd(samples[group], False)
+                r = min_ncomp(s, (u.shape[0], vh.shape[1])) + 1
+                u = u[:, :r]
+                approx = u @ np.diag(s[:r]) @ vh[:r]
+                samples_approx[group] = approx
+        else:
+            for i in np.unique(labels):
+                samples_approx[labels == i] = samples[labels == i].mean(0)
+    return samples_approx
 
 
+class NL_Windowed_tSVD(Windowed_tSVD):
+    def __init__(self,
+                 Nhood=100,
+                 do_signals=True,
+                 do_spatial=True,
+                 n_clusters=_nclusters_,
+                 temporal_mode='flatTV-means',
+                 tv_samples_per_cluster=10,
+                 **kwargs):
+        super(NL_Windowed_tSVD, self).__init__(**kwargs)
 
-def patch_svd_denoise_frames(frames,
-                             do_second_stage=False,
-                             save_coll=None,
-                             tsvd_kw=None,
-                             second_stage_kw=None,
-                             inverse_kw=None):
-    """
-    Split frame stack into overlapping windows (patches), do truncated SVD projection of each patch, optionally improve
-    temporal components by clustering and another SVD in larger windows, and finally merge inverse transforms of each patch.
+        self.Nhood = Nhood
+        self.n_clusters = n_clusters
+        self.temporal_mode = temporal_mode
+        self.tv_samples_per_cluster = tv_samples_per_cluster
+        self.tv_sigma = 1.5
+        self.tv_niters = 3
+        self.clustering_algorithm = 'MiniBatchKMeans'
+        self.do_spatial = do_spatial
+        self.do_signals = do_signals
 
-    Input:
-     - frames: TXY stack of frames to denoise
-     - with_f0: whether to estimate smooth baseline fluorescence
-     - do_second_stage: whether to do the clustering/secondary SVD on temporal compoments
-     - n_clusters: how many clusters to use  at the second stage SVD
-     - **kwargs: arguments to pass to `patch_tsvds_from_frames`
+    def fit_transform(self, frames, do_signals=None, do_spatial=None):
+        coll = super(NL_Windowed_tSVD, self).fit_transform(frames)
 
-    Output:
-     - denoised fluorescence or fluorescence and baseline
-    """
-    coll = patch_tsvd_transform(frames, **tsvd_kw)
-    if do_second_stage:
-        coll = second_stage_svd(coll, frames.shape, **second_stage_kw)
-    if save_coll is not None:
-        with gzip.open(save_coll, 'wb') as fh:
-            pickle.dump((coll, frames.shape), fh)
-    return patch_tsvd_inverse_transform(coll, frames.shape, **inverse_kw)
+        if do_signals is None: do_signals = self.do_signals
+        if do_spatial is None: do_spatial = self.do_spatial
+
+        if do_signals:
+            self.patches_ = self.update_signals()
+        if do_spatial:
+            self.patches_ = self.update_spatial()
+
+        return self.patches_
+
+    def nl_update_components(self, collection=None, field='signals', **kwargs):
+        fsh = self.data_shape_
+        if collection is None:
+            collection = self.patches_
+        out_samples = [np.zeros(getattr(c, field).shape, _dtype_) for c in collection]
+        out_counts = np.zeros(len(collection), np.int)
+
+        squares = make_grid(fsh[1:], self.Nhood, self.Nhood // 2)
+        tstarts = set(c.sq[0].start for c in collection)
+        tsquares = [(t, sq) for t in tstarts for sq in squares]
+
+        def _is_local_patch(p, sqx):
+            t0, sq = sqx
+            tstart = p[0].start
+            psq = p[1:]
+            return (tstart == t0) & (slice_overlaps_square(psq, sq))
+
+        loop = tqdm(tsquares, desc=f'Updating SVD {field}', disable=not self.verbose)
+
+        for sqx in loop:
+            samples = [getattr(c, field)
+                       for c in collection if _is_local_patch(c.sq, sqx)]
+            flat_samples = np.vstack(samples)
+            loop.set_description(f'Updating window with {len(flat_samples)} {field}')
+            approx = process_flat_collection(flat_samples, **kwargs)
+            kstart = 0
+            for i, c in enumerate(collection):
+                if _is_local_patch(c.sq, sqx):
+                    l = len(getattr(c, field))
+                    out_samples[i] += approx[kstart:kstart + l]
+                    out_counts[i] += 1
+                    kstart += l
+        loop.close()
+
+        self.patches_ = [
+            c._replace(**{field: x / (1e-7+cnt)})
+            for c, x, cnt in zip(collection, out_samples, out_counts)
+        ]
+        return self.patches_
+
+    def update_signals(self, collection=None, **kwargs):
+        if collection is None:
+            collection = self.patches_
+        kwargs = dict(field='signals',
+                      clustering_algorithm=self.clustering_algorithm,
+                      n_clusters=self.n_clusters,
+                      mode=self.temporal_mode,
+                      tv_samples_per_cluster=self.tv_samples_per_cluster,
+                      tv_sigma=self.tv_sigma,
+                      tv_niters=self.tv_niters,
+                      **kwargs)
+        return self.nl_update_components(collection, **kwargs)
+
+    def update_spatial(self, collection=None):
+        if collection is None:
+            collection = self.patches_
+        kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd', n_clusters=1)
+        return self.nl_update_components(collection, **kwargs)
+
+
+class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
+    def ms_fit_transform(self, frames, patch_ssizes=(8, 16, 32)):
+        colls = []
+        self.data_shape_ = frames.shape
+        loop = tqdm(patch_ssizes, desc='Going through scales')
+        for psize in loop:
+            self.patch_ssize = psize
+            self.soverlap = psize // 2
+            coll = self.fit_transform(frames)
+            colls.append(coll)
+            rec = self.inverse_transform(coll)
+            frames = frames - rec
+        loop.close()
+        self.ms_patches_ = colls
+        return colls
+
+    def ms_inverse_transform(self, collections=None):
+        if collections is None:
+            collections = self.ms_patches_
+        rec = np.zeros(self.data_shape_)
+        for coll in collections:
+            rec += self.inverse_transform(coll)
+        return rec

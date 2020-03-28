@@ -31,7 +31,6 @@ from imfun.components.pca import PCA_frames
 from imfun import core
 from imfun.core import extrema
 
-
 min_px_size_ = 10
 
 from .globals import _dtype_
@@ -39,17 +38,12 @@ from .globals import _dtype_
 from .decomposition import pca_flip_signs, SVD_patch
 from .decomposition import patch_tsvd_transform, patch_tsvd_inverse_transform
 
-
 from .patches import make_grid
 
 from .utils import rolling_sd_pd, find_bias, find_bias_frames
 from .utils import mad_std
 from .utils import process_signals_parallel
 from .utils import iterated_tv_chambolle
-
-
-
-
 
 
 def store_baseline_pickle(name, frames, ncomp=50):
@@ -79,7 +73,7 @@ def top_running_min(v):
 def windowed_runmin(y, wsize=50, woverlap=25):
     L = len(y)
     if woverlap >= wsize:
-        woverlap = wsize//2
+        woverlap = wsize // 2
     sqs = make_grid((L, ), wsize, woverlap)
     out = (np.max(y) + 0.1) * np.ones(L, _dtype_)
     for sq in sqs:
@@ -94,8 +88,8 @@ def select_most_stable_branch(variants, window=50, woverlap=None):
     if woverlap is None:
         woverlap = max(2, window // 3)
 
-    if  woverlap >= window:
-        woverlap = window//2
+    if woverlap >= window:
+        woverlap = window // 2
     squares = make_grid((L, 1), window, woverlap)
     out = np.zeros(L)
     gradients = [np.gradient(np.gradient(v)) for v in variants]
@@ -127,7 +121,8 @@ def l1_baseline2(y, smooth=25, median_window=50):
     b_add = l2spline(vmlow, smooth / 2)
     return b1 + b_add
 
-def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline,  fnkw=None):
+
+def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline, fnkw=None):
     """Baseline from iterated thresholded smoothing"""
     if fnkw is None:
         fnkw = {}
@@ -135,14 +130,19 @@ def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline,  fnkw=Non
     ns = mad_std(np.diff(y))
     for i_ in range(niter):
         ys = smooth_fn(ytemp, **fnkw)
-        ytemp = np.where(np.abs(y-ys)<ns*th, y, ys)
+        ytemp = np.where(np.abs(y - ys) < ns * th, y, ys)
     return ys
 
-def iterated_smoothing_baseline2(y, niter=10, th=1.5,
-                                 noise_sigma = None,
+
+def iterated_smoothing_baseline2(y,
+                                 niter=10,
+                                 th=1.5,
+                                 noise_sigma=None,
                                  asym=False,
-                                 smooth_fn=l1spline, smooth_fn2=None,
-                                 fnkw=None, fnkw2=None):
+                                 smooth_fn=l1spline,
+                                 smooth_fn2=None,
+                                 fnkw=None,
+                                 fnkw2=None):
 
     fnkw = dict() if fnkw is None else fnkw
     fnkw2 = fnkw if fnkw2 is None else fnkw2
@@ -155,29 +155,43 @@ def iterated_smoothing_baseline2(y, niter=10, th=1.5,
     for i_ in range(niter):
         ys = smooth_fn(ytemp, **fnkw)
         ys2 = smooth_fn2(ytemp, **fnkw2)
-        cond = (y > ys) if asym else (np.abs(y-ys) > ns*th)
+        cond = (y > ys) if asym else (np.abs(y - ys) > ns * th)
         ytemp = np.where(cond, ys2, y)
     return ys
 
+
 def iterated_l1_baseline(y, smooth1=10, smooth2=25, **kwargs):
-    fnkw1,fnkw2 = (dict(s=s) for s in (smooth1,smooth2))
-    return iterated_smoothing_baseline2(y,smooth_fn=l1spline, fnkw=fnkw1, fnkw2=fnkw2, **kwargs)
+    fnkw1, fnkw2 = (dict(s=s) for s in (smooth1, smooth2))
+    return iterated_smoothing_baseline2(y,
+                                        smooth_fn=l1spline,
+                                        fnkw=fnkw1,
+                                        fnkw2=fnkw2,
+                                        **kwargs)
+
 
 def make_odd(n):
     return n + n%2 - 1
 
-def iterated_savgol_baseline2(y, window=99, window2=None, order=3, order2=3 , post_smooth=5,**kwargs):
 
-    window = make_odd(np.minimum(len(y)-1, window))
-    window2 = window*4-1 if not window2 else window2
-    window2 = make_odd(np.minimum(window2,len(y)-1))
+def iterated_savgol_baseline2(y,
+                              window=99,
+                              window2=None,
+                              order=3,
+                              order2=3,
+                              post_smooth=5,
+                              **kwargs):
 
-    b =  iterated_smoothing_baseline2(y,
-                                      smooth_fn=signal.savgol_filter,
-                                      fnkw=dict(window_length=window, polyorder=order),
-                                      fnkw2=dict(window_length=window2, polyorder=order2),
-                                      **kwargs)
+    window = make_odd(np.minimum(len(y) - 1, window))
+    window2 = window*4 - 1 if not window2 else window2
+    window2 = make_odd(np.minimum(window2, len(y) - 1))
+
+    b = iterated_smoothing_baseline2(y,
+                                     smooth_fn=signal.savgol_filter,
+                                     fnkw=dict(window_length=window, polyorder=order),
+                                     fnkw2=dict(window_length=window2, polyorder=order2),
+                                     **kwargs)
     return l2spline(b, post_smooth)
+
 
 def percentile_baseline(y,
                         plow=25,
@@ -205,42 +219,42 @@ def percentile_baseline(y,
     return b
 
 
-def baseline_with_shifts(y, l1smooth=25):
-    ys_l1 = l1spline(y, l1smooth)
-    ns = mad_std(y - ys_l1)
-    ys = iterated_tv_chambolle(y, 1 * ns, 5)
-    jump_locs, shift = find_jumps(ys, ys_l1, pre_smooth=1.5)
-    trend = l1_baseline2(y - shift, l1smooth)
-    baseline = trend + shift
-    return baseline
+# def baseline_with_shifts(y, l1smooth=25):
+#     ys_l1 = l1spline(y, l1smooth)
+#     ns = mad_std(y - ys_l1)
+#     ys = iterated_tv_chambolle(y, 1 * ns, 5)
+#     jump_locs, shift = find_jumps(ys, ys_l1, pre_smooth=1.5)
+#     trend = l1_baseline2(y - shift, l1smooth)
+#     baseline = trend + shift
+#     return baseline
 
-def baseline_with_shifts(y,l1smooth=25, trend_kw=None,with_plot=False):
+
+def baseline_with_shifts(y, l1smooth=25, trend_kw=None, with_plot=False):
     if trend_kw is None:
         trend_kw = dict()
     ys_l1 = l1spline(y, 25)
-    ns = mad_std(y-ys_l1)
-    ys = iterated_tv_chambolle(y, 1*ns, 5)
-    jump_locs, shift = find_jumps(ys,ys_l1, pre_smooth=1.5)
+    ns = mad_std(y - ys_l1)
+    ys = iterated_tv_chambolle(y, 1 * ns, 5)
+    jump_locs, shift = find_jumps(ys, ys_l1, pre_smooth=1.5)
     #trend = l1_baseline2(y-shift)
-    trend = iterated_savgol_baseline(y-shift, th=1.5, window=199)
+    trend = iterated_savgol_baseline2(y - shift, th=1.5, window=199)
     baseline = trend + shift
     if with_plot:
         from matplotlib import pyplot as plt
-        plt.figure(figsize=(16,8))
+        plt.figure(figsize=(16, 8))
         plt.plot(y, 'gray')
-        plt.plot(ys,'k')
+        plt.plot(ys, 'k')
         for j in jump_locs:
-            plt.axvline(j, color='pink',lw=0.5)
-        plt.plot(y-shift,lw=0.5)
-        plt.plot(trend, ls='--',color='gray', label='trend estimate')
-        plt.plot(trend+shift,lw=3,c='m',label='baseline estimate')
-        plt.plot(shift,color='steelblue',lw=0.5,label='shift estimate')
+            plt.axvline(j, color='pink', lw=0.5)
+        plt.plot(y - shift, lw=0.5)
+        plt.plot(trend, ls='--', color='gray', label='trend estimate')
+        plt.plot(trend + shift, lw=3, c='m', label='baseline estimate')
+        plt.plot(shift, color='steelblue', lw=0.5, label='shift estimate')
         plt.legend()
     return baseline
 
 
-
-def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95,nhood=10):
+def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95, nhood=10):
     v = ys_tv - ys_l1
     if pre_smooth > 0:
         v = l2spline(v, pre_smooth)
@@ -249,24 +263,29 @@ def find_jumps(ys_tv, ys_l1, pre_smooth=1.5, top_gradient=95,nhood=10):
     vv_extrema = np.concatenate([vvmx, vvmn])
     g = np.abs(der1)
     ee = np.array(extrema.locextr(g, refine=False, sort_values=False, output='max'))
-    ee = ee[ee[:,1] >= np.percentile(g, top_gradient)]
+    ee = ee[ee[:, 1] >= np.percentile(g, top_gradient)]
     all_extrema = np.concatenate([maxima, minima])
-    extrema_types = {em : (1 if em in maxima else -1) for em in all_extrema}
+    extrema_types = {em: (1 if em in maxima else -1) for em in all_extrema}
     jumps = []
     Lee = len(ee)
-    for k,em in enumerate(ee[:,0]):
+    for k, em in enumerate(ee[:, 0]):
         if np.min(np.abs(em - vv_extrema)) < 2:
             jumps.append(int(em))
 
     shift = np.zeros(len(v))
     L = len(v)
-    for k,j in enumerate(jumps):
-        if j < L-1:
-            shift[j+1] = np.mean(ys_tv[j+1:min(j+nhood+1,L)]) - np.mean(ys_tv[max(0,j-nhood):j])
+    for k, j in enumerate(jumps):
+        if j < L - 1:
+            shift[j + 1] = np.mean(ys_tv[j + 1:min(j + nhood + 1, L)]) - np.mean(
+                ys_tv[max(0, j - nhood):j])
     return jumps, np.cumsum(shift)
 
 
-def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None, verbose=False):
+def first_pc_baseline(frames,
+                      niters=10,
+                      baseline_fn=l1_baseline2,
+                      fnkw=None,
+                      verbose=False):
     f0 = np.zeros(frames.shape, _dtype_)
     fnkw = {} if fnkw is None else fnkw
     iter_range = range(niters)
@@ -281,6 +300,7 @@ def first_pc_baseline(frames, niters=10, baseline_fn=l1_baseline2, fnkw=None, ve
         f0 += pcf.inverse_transform(pc_baseline.reshape(-1, 1))
     return f0
 
+
 def multi_scale_simple_baseline(y,
                                 plow=50,
                                 th=3,
@@ -289,8 +309,9 @@ def multi_scale_simple_baseline(y,
     if ns is None:
         ns = rolling_sd_pd(y)
 
-    b_estimates = [percentile_baseline(y, plow, th, smooth, ns)
-                   for smooth in smooth_levels]
+    b_estimates = [
+        percentile_baseline(y, plow, th, smooth, ns) for smooth in smooth_levels
+    ]
 
     low_env = np.amin(b_estimates, axis=0)
     low_env = np.clip(low_env, np.min(y), np.max(y))
@@ -393,6 +414,7 @@ def viz_baseline(v,
     ax.plot(tv, b, 'teal', lw=1)
     ax.axis('tight')
 
+
 def frames_pca_baseline(frames,
                         npc=None,
                         pcf=None,
@@ -410,6 +432,7 @@ def frames_pca_baseline(frames,
     baseline_frames = pcf.inverse_transform(base_coords)
     return baseline_frames
 
+
 def patch_tsvd_baseline(frames,
                         ssize=32,
                         soverlap=4,
@@ -420,14 +443,19 @@ def patch_tsvd_baseline(frames,
     Use smoothed principal components in spatial windows to estimate time-varying baseline fluorescence F0
     """
     if fnkw is None:
-        fnkw = dict(window=100, window2=250, order=3,order2=3, th=1.5)
-    svd_patches = patch_tsvd_transform(frames, ssize, len(frames), soverlap=soverlap, max_ncomps=max_ncomps)
+        fnkw = dict(window=100, window2=250, order=3, order2=3, th=1.5)
+    svd_patches = patch_tsvd_transform(frames,
+                                       ssize,
+                                       len(frames),
+                                       soverlap=soverlap,
+                                       max_ncomps=max_ncomps)
     out_coll = []
     for p in tqdm(svd_patches, desc='doing baselines'):
-        baselines = np.array([iterated_savgol_baseline2(v,**fnkw) for v in p.signals])
+        baselines = np.array([iterated_savgol_baseline2(v, **fnkw) for v in p.signals])
         out_coll.append(SVD_patch(baselines, *p[1:]))
-    baseline_frames =  patch_tsvd_inverse_transform(out_coll, frames.shape)
+    baseline_frames = patch_tsvd_inverse_transform(out_coll, frames.shape)
     return baseline_frames
+
 
 def calculate_baseline_pca_asym(frames,
                                 niter=50,
@@ -468,6 +496,7 @@ def calculate_baseline_pca_asym(frames,
             frames_w = rec + biases    #np.array([find_bias(delta[k],ns=ns0[k]) for k,v in enumerate(rec)])[:,None]
 
     return frames_w
+
 
 # def calculate_baseline(frames,
 #                        pipeline=multi_scale_simple_baseline,
