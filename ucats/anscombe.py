@@ -16,10 +16,19 @@ class Anscombe:
         return Dsq/4 - 1/8  + (a/4)/D - (11/8)/Dsq + a*(5/8)/(Dsq*D)
 
     @staticmethod
+    def wrap_input(func):
+        def _wrapper(data, *args, **kwargs):
+            data_t = Anscombe.transform(data)
+            return func(data_t, *args, **kwargs)
+        return _wrapper
+
+    @staticmethod
+    def wrap_output(func):
+        def _wrapper(*args, **kwargs):
+            out_t = func(*args, **kwargs)
+            return Anscombe.inverse_transform(out_t)
+        return _wrapper
+
+    @staticmethod
     def wrap(func):
-        def wrapper(data, *args, **kwargs):
-            data_ansc = Anscombe.transform(data)
-            out_ansc = func(data, *args, **kwargs)
-            out = Anscombe.inverse_transform(out_ansc)
-            return out
-        return wrapper
+        return wrap_output(wrap_input(func))

@@ -10,8 +10,10 @@ from tqdm.auto import tqdm
 
 from . import scramble
 
+from .anscombe import Anscombe
 from .patches import make_grid
 from .utils import adaptive_filter_1d, adaptive_filter_2d
+
 
 from .globals import _dtype_
 
@@ -102,6 +104,9 @@ class Windowed_tSVD:
         self.patches_ = None
         self.verbose = verbose
 
+        self.fit_transform_ansc = Anscombe.wrap_input(self.fit_transform)
+        self.inverse_transform_ansc = Anscombe.wrap_output(self.inverse_transform)
+
     def fit_transform(self, frames):
         data = np.array(frames).astype(_dtype_)
         acc = []
@@ -163,6 +168,7 @@ class Windowed_tSVD:
         self.data_shape_ = frames.shape
         return self.patches_
 
+
     def inverse_transform(self, patches=None):
         if patches is None:
             patches = self.patches_
@@ -186,6 +192,7 @@ class Windowed_tSVD:
         out_data *= (counts > 1e-12)
 
         return out_data
+
 
 
 # # TODO: would it be better to make it a generator?

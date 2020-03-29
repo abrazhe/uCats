@@ -12,13 +12,15 @@ from tqdm.auto import tqdm
 
 from imfun import components
 
+from ..anscombe import Anscombe
+
 from ..cluster import sort_by_clust, clustering_dispatcher_
 
 from ..decomposition import (min_ncomp, SVD_patch, Windowed_tSVD)
 
-from ..patches import make_grid, slice_overlaps_square
-
 from ..globals import _dtype_
+
+from ..patches import make_grid, slice_overlaps_square
 
 from ..utils import mad_std
 
@@ -200,6 +202,11 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         self.clustering_algorithm = 'MiniBatchKMeans'
         self.do_spatial = do_spatial
         self.do_signals = do_signals
+        self.denoise_ansc = Anscombe.wrap(self.denoise)
+
+    def denoise(self, frames):
+        coll = self.fit_transform(frames)
+        return self.inverse_transform(coll)
 
     def fit_transform(self, frames, do_signals=None, do_spatial=None):
         coll = super(NL_Windowed_tSVD, self).fit_transform(frames)
@@ -275,6 +282,15 @@ class NL_Windowed_tSVD(Windowed_tSVD):
 
 
 class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
+    def ms_denoise(self, frames, patch_ssizes=(8,16,32)):
+        colls = self.ms_fit_transform((frames))
+        return self.ms_inverse_transform(colls)
+
+    def ms_denoise_ansc(self, frames, patch_ssizes=(8,16,32)):
+        frames_t = Anscombe.transform(frames)
+        out = self.ms_denoise(frames_t, patch_ssizes)
+        return Anscombe.inverse_transform(out)
+
     def ms_fit_transform(self, frames, patch_ssizes=(8, 16, 32)):
         colls = []
         self.data_shape_ = frames.shape
@@ -297,3 +313,10 @@ class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
         for coll in collections:
             rec += self.inverse_transform(coll)
         return rec
+
+    def ms_fit_transform_ansc(self, frames, *args, **kwargs):
+        frames_t = Anscombe.transform(frames)
+        return self.ms_fit_transform(frames_t, *args, **kwargs)
+
+    def ms_inverse_transform_ansc(self,*args,**kwargs):
+        return Anscombe.inverse_transform(self.ms_inverse_transform(*args,**kwargs))
