@@ -449,7 +449,7 @@ def patch_tsvd_baseline(frames,
     svd_patches = wtsvd.fit_transform(frames)
     out_coll = []
     for p in tqdm(svd_patches, desc='doing baselines'):
-        baselines = np.array([iterated_savgol_baseline2(v, **fnkw) for v in p.signals])
+        baselines = np.array([smooth_fn(v, **fnkw) for v in p.signals])
         out_coll.append(p._replace(signals=baselines))
     baseline_frames = wtsvd.inverse_transform(out_coll)
     return baseline_frames

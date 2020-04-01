@@ -31,4 +31,4 @@ class Anscombe:
 
     @staticmethod
     def wrap(func):
-        return wrap_output(wrap_input(func))
+        return Anscombe.wrap_output(Anscombe.wrap_input(func))

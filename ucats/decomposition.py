@@ -112,7 +112,7 @@ class Windowed_tSVD:
         acc = []
         #squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
         L = len(frames)
-        patch_tsize = min(L, self.patch_tsize)
+        self.patch_tsize = min(L, self.patch_tsize)
         # if self.toverlap >= self.patch_tsize:
         #     self.toverlap = self.patch_tsize // 2
         if self.toverlap >= self.patch_tsize:
@@ -132,14 +132,16 @@ class Windowed_tSVD:
                                                      keep_clusters=False).reshape(v.shape)
 
         #print('Splitting to patches and doing SVD decompositions',flush=True)
+
+
         for sq in tqdm(squares, desc='truncSVD in patches', disable=not self.verbose):
 
             patch_frames = data[sq]
             L = len(patch_frames)
             w_sh = patch_frames.shape
 
-            patch = patch_frames.reshape(L,
-                                         -1)    # now each column is signal in one pixel
+            # now each column is signal in one pixel
+            patch = patch_frames.reshape(L,-1)
             patch_c = np.mean(patch, 0)
             patch = patch - patch_c
 
@@ -147,6 +149,7 @@ class Windowed_tSVD:
             rank = max(self.min_ncomps, min_ncomp(s, patch.shape) + 1)
             rank = min(rank, self.max_ncomps)
             u, vh = svd_flip_signs(u[:, :rank], vh[:rank])
+
 
             if self.do_pruning:
                 w = weight_components(patch.T, vh, rank)
@@ -179,14 +182,25 @@ class Windowed_tSVD:
         for p in tqdm(patches,
                       desc='truncSVD inverse transform',
                       disable=not self.verbose):
+
             L = p.w_shape[0]
-            tcrossfade_coefs = tanh_step(np.arange(L), L,
-                                         p.toverlap).astype(_dtype_)[:, None, None]
-            counts[p.sq] += tcrossfade_coefs
+            t_crossfade = tanh_step(np.arange(L), L, p.toverlap).astype(_dtype_)
+            t_crossfade = t_crossfade[:, None, None]
+
+            psize = np.max(p.w_shape[1:])
+            scf = tanh_step(np.arange(psize), psize, p.soverlap, p.soverlap/2   )
+            scf = scf[:,None]
+            w_crossfade = scf @ scf.T
+            nr,nc = p.w_shape[1:]
+            w_crossfade = w_crossfade[:nr, :nc].astype(_dtype_)
+            w_crossfade = w_crossfade[None, :, :]
+
+            counts[p.sq] += t_crossfade * w_crossfade
+
 
             rec = (p.signals.T @ p.filters).reshape(p.w_shape)
             rec += p.center.reshape(p.w_shape[1:])
-            out_data[tuple(p.sq)] += rec * tcrossfade_coefs
+            out_data[tuple(p.sq)] += rec * t_crossfade * w_crossfade
 
         out_data /= (1e-12 + counts)
         out_data *= (counts > 1e-12)
@@ -322,12 +336,13 @@ def weight_components(data, components, rank=None, Npermutations=100, clip_perce
 #     return (u[:, :rank] * w) @ np.diag(s[:rank]) @ vh[:rank] + dc
 
 
-def tanh_step(x, window, overlap):
+def tanh_step(x, window, overlap, taper_k=None):
     overlap = max(1, overlap)
     taper_width = overlap / 2
-    taper_k = overlap / 10
-    A = np.tanh((x-taper_width) / taper_k)
-    B = np.tanh((window-x-taper_width) / taper_k)
+    if taper_k is None:
+        taper_k = overlap / 10
+    A = np.tanh((x+0.5-taper_width) / taper_k)
+    B = np.tanh((window-(x+0.5)-taper_width) / taper_k)
     return np.clip((1.01 +  A*B)/2, 0, 1)
 
 

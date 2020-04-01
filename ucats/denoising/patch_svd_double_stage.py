@@ -3,6 +3,8 @@ from numpy import linalg
 
 from numba import jit
 
+from scipy import ndimage as ndi
+
 from sklearn import cluster as skclust
 
 import gzip
@@ -281,37 +283,53 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         return self.nl_update_components(collection, **kwargs)
 
 
+from skimage import transform as sktransform
+
 class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
-    def ms_denoise(self, frames, patch_ssizes=(8,16,32)):
-        colls = self.ms_fit_transform((frames))
+    def ms_denoise(self, frames, *args, **kwargs):
+        colls = self.ms_fit_transform(frames, *args, **kwargs)
         return self.ms_inverse_transform(colls)
 
-    def ms_denoise_ansc(self, frames, patch_ssizes=(8,16,32)):
+    def ms_denoise_ansc(self, frames, *args, **kwargs):
         frames_t = Anscombe.transform(frames)
-        out = self.ms_denoise(frames_t, patch_ssizes)
+        out = self.ms_denoise(frames_t, *args, **kwargs)
         return Anscombe.inverse_transform(out)
 
-    def ms_fit_transform(self, frames, patch_ssizes=(8, 16, 32)):
+    def ms_fit_transform(self, frames, nscales=3):
         colls = []
-        self.data_shape_ = frames.shape
-        loop = tqdm(patch_ssizes, desc='Going through scales')
-        for psize in loop:
-            self.patch_ssize = psize
-            self.soverlap = psize // 2
+        self.full_data_shape_ = frames.shape
+        #if patch_tsizes is None:
+        #    patch_tsizes = (self.patch_tsize,)*len(patch_ssizes)
+        #loop = tqdm(patch_ssizes, desc='Going through scales')
+        loop = tqdm(range(nscales), desc='tSVD at different spatial scales')
+        Nhood_orig = self.Nhood
+        for j in loop:
+            scale = 2**j
             coll = self.fit_transform(frames)
-            colls.append(coll)
+            colls.append((coll, scale, frames.shape))
             rec = self.inverse_transform(coll)
-            frames = frames - rec
+            #frames = frames - rec
+            frames = sktransform.downscale_local_mean(frames - rec, factors=(1, 2, 2))
+            self.Nhood = max(self.patch_ssize*4, self.Nhood // 2)
         loop.close()
+        self.Nhood = Nhood_orig
         self.ms_patches_ = colls
         return colls
 
     def ms_inverse_transform(self, collections=None):
         if collections is None:
             collections = self.ms_patches_
-        rec = np.zeros(self.data_shape_)
-        for coll in collections:
-            rec += self.inverse_transform(coll)
+        rec = np.zeros(self.full_data_shape_)
+        nr,nc = self.full_data_shape_[1:]
+        for coll, scale, fsh in collections:
+            self.data_shape_ = fsh
+            update = self.inverse_transform(coll)
+            if scale > 1:
+                update = sktransform.rescale(update, (1,scale,scale))
+            nur,nuc = update.shape[1:]
+            nrx = min(nr,nur)
+            ncx = min(nc, nuc)
+            rec[:, :nrx, :ncx] = rec[:, :nrx, :ncx] + update[:, :nrx, :ncx]
         return rec
 
     def ms_fit_transform_ansc(self, frames, *args, **kwargs):
