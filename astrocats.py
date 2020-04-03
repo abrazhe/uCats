@@ -40,7 +40,7 @@ from imfun import components
 
 
 
-import μCats as ucats
+import ucats
 
 import socket
 def my_hostname():
@@ -205,7 +205,7 @@ def process_record(fs, fname, series, args):
 
     # I. -- Correcting for gain and offset --
     frames = fsc.data.astype(float32)
-    gain_est,offset_est = ucats.estimate_gain_and_offset(frames,20,ntries=200,npatches=int(1e5),
+    gain_est,offset_est = ucats.exponential_family.estimate_gain_and_offset(frames,20,ntries=200,npatches=int(1e5),
                                                          with_plot=True,save_to=nametag+'-gain-offset.png')
     frames_x = (frames - offset_est)/gain_est
     frames_x[frames_x<0] = 0
@@ -233,17 +233,17 @@ def process_record(fs, fname, series, args):
         print('loading existing results of event detection:', detected_name)
         if os.path.exists(baseline_name):
             print('loading existing fluorescence baseline frames')
-            F0 = ucats.load_baseline_pickle(baseline_name)
+            F0 = ucats.baselines.load_baseline_pickle(baseline_name)
         else:
             print('calculating baseline fluorescence')
             #F0 = ucats.calculate_baseline_pca_asym(frames, smooth=300, niter=20, verbose=args.verbose)
-            _, F0 = ucats.block_svd_denoise_and_separate(frames_x, nhood=16, stride=16, min_comps=3,
+            _, F0 = ucats.denoising.block_svd_denoise_and_separate(frames_x, nhood=16, stride=16, min_comps=3,
                                                            baseline_smoothness=args.baseline_smoothness,
                                                            spatial_filter=3,
                                                            correct_spatial_components=False,
                                                            with_clusters=False)
             print('storing baseline fluorescence estimate')
-            ucats.store_baseline_pickle(baseline_name,F0)
+            ucats.baselines.store_baseline_pickle(baseline_name,F0)
 
         F0 = fseq.from_array(F0)
         F0.meta['channel'] = 'F0'
@@ -257,7 +257,7 @@ def process_record(fs, fname, series, args):
         #    xt = ucats.Anscombe.transform(frames_x)
         #else:
         #    xt = frames_x
-        xt = ucats.Anscombe.transform(frames_x)
+        xt = ucats.exponential_family.Anscombe.transform(frames_x)
         _process_kwargs = dict(
             tsvd_kw = dict(ssmooth=3,
                            tsmooth=5,
@@ -278,22 +278,22 @@ def process_record(fs, fname, series, args):
         #fdelta, fb = multiscale_process_frames(xt, twindow=args.detection_temporal_window, **_process_kwargs )
         #fdelta, fb = ucats.block_svd_separate_tslices(xt,twindow=args.detection_temporal_window, **_process_kwargs)
         #_process_kwargs = dict(sstride=5, ssmooth=3, tsmooth=3, do_pruning=0,)
-        D_t,F0_t = ucats.patch_svd_denoise_frames(xt,
+        D_t,F0_t = ucats.denoising.patch_svd_denoise_frames(xt,
                                                   save_coll=nametag+'-coll2.pz',
                                                   **_process_kwargs)
         D_t = np.clip(D_t, 2*np.sqrt(3/8), np.max(D_t))
         F0_t = np.clip(F0_t, 2*np.sqrt(3/8), np.max(F0_t))
-        F0, frec = (ucats.Anscombe.inverse_transform(ucats.adaptive_median_filter(x)) for x in (F0_t, D_t))
+        F0, frec = (ucats.exponential_family.Anscombe.inverse_transform(ucats.utils.adaptive_median_filter(x)) for x in (F0_t, D_t))
         frec[frec<0] = 0
         #dfosd = ucats.to_zscore_frames(D_t-F0_t)
         dfof = (frec/F0 - 1)*(F0 > 0.05)
         #dfosd = np.clip(dfosd, *np.percentile(dfosd, (0.5,99.5)))
         df_signals = dfof.reshape(len(F0),-1).T
-        labels = np.array([ucats.simple_label(v,tau=0.5,threshold=args.detection_var_threshold/100)
+        labels = np.array([ucats.detection1d.simple_label(v,tau=0.5,threshold=args.detection_var_threshold/100)
                            for v in tqdm(df_signals)]).T.reshape(F0_t.shape)
         #labels2 = ucats.activity_mask_median_filtering(D_t/F0_t-1, nw=5)
         #labels = ucats.refine_mask_by_percentile_filter(labels | labels2, niter=10,with_cleanup=True,min_obj_size=10)
-        labels = ucats.refine_mask_by_percentile_filter(labels, niter=5,with_cleanup=True,min_obj_size=10)
+        labels = ucats.utils.refine_mask_by_percentile_filter(labels, niter=5,with_cleanup=True,min_obj_size=10)
 
 
         # III. Calculate ΔF/F
@@ -310,7 +310,7 @@ def process_record(fs, fname, series, args):
         #fdelta = ucats.adaptive_median_filter(fdelta,ssmooth=3,keep_clusters=True) # todo: make this optional
 
         #frec = ucats.adaptive_median_filter(frec)
-        dFoF = ucats.adaptive_median_filter(frec/F0-1)
+        dFoF = ucats.utils.adaptive_median_filter(frec/F0-1)
         dFoFx = dFoF*labels
         #del labels, labels2, D_t, F0_t
 
@@ -319,7 +319,7 @@ def process_record(fs, fname, series, args):
         #else:
         #    frames_dn, F0 = fdelta, fb
         print('storing baseline fluorescence estimate')
-        ucats.store_baseline_pickle(baseline_name,F0)
+        ucats.baselines.store_baseline_pickle(baseline_name,F0)
 
         #nsdt = ucats.std_median(fdelta,axis=0)
         #mask_pipeline = lambda m: ucats.threshold_object_size(ucats.expand_mask_by_median_filter(m,niter=3),9)
@@ -336,7 +336,7 @@ def process_record(fs, fname, series, args):
         #frames_dn = 0.25*fdelta**2 + 0.5*fdelta*fb
         #del fb, fdelta,mask_final
 
-        coll_ = ucats.EventCollection(dFoFx,
+        coll_ = ucats.events.EventCollection(dFoFx,
                                       threshold=args.event_segmentation_threshold,
                                       min_area=args.event_min_area,
                                       min_duration=args.event_min_duration,
@@ -430,7 +430,7 @@ def process_record(fs, fname, series, args):
                         writer=args.writer)
 
     print('segmenting and animating events')
-    events = ucats.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc_x.data/F0.data-1)
+    events = ucats.events.EventCollection(asarray(fsx.data,dtype=np.float32), dfof_frames=fsc_x.data/F0.data-1)
     if len(events.filtered_coll):
         events.to_csv(nametag+threshold_tag+'-events.csv')
     #animate_events(fsc.data, events,name+'-events-new4.mp4')
@@ -442,15 +442,15 @@ def process_record(fs, fname, series, args):
 
 #todo: move to ucats?
 def downsample_stack(frames):
-    return np.array([ucats.downsample_image(f) for f in frames], dtype=ucats._dtype_)
+    return np.array([ucats.utils.downsample_image(f) for f in frames], dtype=ucats._dtype_)
 
 #todo: move to ucats?
 def upsample_stack(frames, target=None):
     if target is None:
-        target = np.array([ucats.upsample_image(f) for f in frames], dtype=ucats._dtype_)
+        target = np.array([ucats.utils.upsample_image(f) for f in frames], dtype=ucats._dtype_)
     else:
         for k,f in enumerate(frames):
-            copy_to_larger_cpad(ucats.upsample_image(f), target[k])
+            copy_to_larger_cpad(ucats.utils.upsample_image(f), target[k])
     return target
 
 
@@ -470,17 +470,17 @@ def multiscale_process_frames(frames, twindow, **_process_kwargs):
     frames_ds1 = downsample_stack(frames)
     frames_ds2 = downsample_stack(frames_ds1)
 
-    fdelta2, fb2 = ucats.block_svd_separate_tslices(frames_ds2, twindow,  **_process_kwargs)
+    fdelta2, fb2 = ucats.denoising.block_svd_separate_tslices(frames_ds2, twindow,  **_process_kwargs)
     fdelta2 = upsample_stack(fdelta2, np.zeros_like(frames_ds1))
     fb2 = upsample_stack(fb2, np.zeros_like(frames_ds1))
 
     frames_ds1 = frames_ds1 - fb2 - fdelta2
-    fdelta1, fb1 = ucats.block_svd_separate_tslices(frames_ds1, twindow,  **_process_kwargs)
+    fdelta1, fb1 = ucats.denoising.block_svd_separate_tslices(frames_ds1, twindow,  **_process_kwargs)
 
     fdelta1 = upsample_stack(fdelta1 + fdelta2, np.zeros_like(frames))
     fb1 = upsample_stack(fb1 + fb2, np.zeros_like(frames))
 
-    fdelta, fb = ucats.block_svd_separate_tslices(frames-fdelta1-fb1, twindow,  **_process_kwargs)
+    fdelta, fb = ucats.denoising.block_svd_separate_tslices(frames-fdelta1-fb1, twindow,  **_process_kwargs)
     return fdelta + fdelta1, fb + fb1
 
 
@@ -545,16 +545,16 @@ imgreg_dispatcher_ = {'affine':imgreg.affine,
                       'msclg':imgreg.msclg}
 
 def apply_warps_and_crop(fs, warps, verbose, njobs):
-    mx_warps = ucats.max_shifts(warps, verbose)
+    mx_warps = ucats.utils.max_shifts(warps, verbose)
     fsc = ofreg.warps.map_warps(warps, fs, njobs=njobs)
     fsc.meta['file_path']=fs.meta['file_path']
     fsc.meta['channel'] = fs.meta['channel']+'-sc'
 
     if isinstance(fs,fseq.FStackColl):
         for stack in fsc.stacks:
-            stack.data = ucats.crop_by_max_shift(stack.data,warps,mx_warps)
+            stack.data = ucats.utils.crop_by_max_shift(stack.data,warps,mx_warps)
     else:
-        fsc.data = ucats.crop_by_max_shift(fsc.data,warps,mx_warps)
+        fsc.data = ucats.utils.crop_by_max_shift(fsc.data,warps,mx_warps)
     return fsc
 
 from imfun.core import fnutils
@@ -563,12 +563,12 @@ def preprocess_for_registration_1(frames, n_components=None, s_smooth=1., t_smoo
         n_components = len(frames)//50+5
     pcf = components.pca.PCA_frames(frames, npc=n_components) # note: number of components may also have to be fixed
     vh_frames = pcf.vh.reshape(-1, *pcf.sh)
-    coords_s = array([ucats.smoothed_medianf(v,0.5,t_smooth) for v in pcf.coords.T]).T
-    processors = [lambda f: ucats.l2spline(f,s_smooth), lambda f: f-ucats.l2spline(f,background_smooth)]
+    coords_s = array([ucats.utils.smoothed_medianf(v,0.5,t_smooth) for v in pcf.coords.T]).T
+    processors = [lambda f: ucats.utils.l2spline(f,s_smooth), lambda f: f-ucats.l2spline(f,background_smooth)]
     if with_adaptive_filter:
-        processors = [lambda f,: ucats.adaptive_filter_2d(f, th=1.5, smooth=25, reverse=True,
+        processors = [lambda f,: ucats.utils.adaptive_filter_2d(f, th=1.5, smooth=25, reverse=True,
                                                          keep_clusters=False,
-                                                         smoother=lambda f_,smooth: ucats.smoothed_medianf(f_,5,smooth))] + processors
+                                                         smoother=lambda f_,smooth: ucats.utils.smoothed_medianf(f_,5,smooth))] + processors
 
     process_spatial_component = fnutils.flcompose(*processors)
     pcf.vh = array([[process_spatial_component(f) for f in vh_frames]]).reshape(pcf.vh.shape)
@@ -611,7 +611,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
     #fsm.frame_filters = [partial(ndimage.median_filter, size=3)]
     #fsm_filtered = fseq.from_array(fsm[:])
     #fsm_filtered = ndi.median_filter(fsm[:], size=(5,3,3)).astype(ucats._dtype_)
-    fsm_filtered = ucats.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
+    fsm_filtered = ucats.utils.clip_outliers(fsm[:],0.05, 99.95).astype(ucats._dtype_)
     # Removing global trend
     #fsm_filtered = fsm_filtered - fsm_filtered.mean(axis=(1,2))[:,None,None]
 
@@ -670,7 +670,7 @@ def stabilize_motion(fs, args, nametag='',suff=None):
                                               **model_params)
             warp_history.append(warps)
             newframes = ofreg.warps.map_warps(warps, newframes, njobs=args.ncpu).astype(ucats._dtype_)
-            mx_warps = ucats.max_shifts(warps, args.verbose)
+            mx_warps = ucats.utils.max_shifts(warps, args.verbose)
 
         final_warps = [reduce(op.add, warpchain) for warpchain in zip(*warp_history)]
         ofreg.warps.to_dct_encoded(warps_name, final_warps)
@@ -806,15 +806,15 @@ def animate_events(frames, ev_coll, args,
 
 
 def make_mask(dfof, nsd0):
-    th = ucats.percentile_th_frames(dfof,2.5)
+    th = ucats.utils.percentile_th_frames(dfof,2.5)
     mask_simple1 = (dfof1 > th)*(dfof1>0.05)
     mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
-    mask_simple1 = np.array([ucats.cleanup_mask(m, 2,5) for m in mask_simple1])
+    mask_simple1 = np.array([ucats.masks.cleanup_mask(m, 2,5) for m in mask_simple1])
 
     mask_simple2 = (dfof>nsd0)
     mask_simple2 = mask_simple2 + ndi.median_filter(mask_simple2, 3)
-    mask_simple2 = np.array([ucats.cleanup_mask(m, 3,5) for m in mask_simple2])
-    return ucats.select_overlapping(mask_simple2, mask_simple1)
+    mask_simple2 = np.array([ucats.masks.cleanup_mask(m, 3,5) for m in mask_simple2])
+    return ucats.masks.select_overlapping(mask_simple2, mask_simple1)
 
 if __name__ == '__main__':
     main()
