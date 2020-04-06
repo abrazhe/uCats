@@ -200,6 +200,11 @@ def percentile_baseline(y,
                         ns=None,
                         th=3,
                         npad=None):
+    """
+    Use percentile filtering to estimate slowly changing baseline level.
+    Output of the percentile filter is further smoothed with `smoother` function and
+    `out_smooth` parameter.
+    """
     L = len(y)
 
     npad = percentile_window // 2 if (npad is None) else npad
@@ -432,11 +437,11 @@ def frames_pca_baseline(frames,
 
 
 def patch_tsvd_baseline(frames,
-                        ssize=32,
-                        soverlap=4,
-                        max_ncomps=5,
-                        smooth_fn=iterated_savgol_baseline2,
-                        fnkw=None):
+                        ssize:"spatial window size"=32,
+                        soverlap:"overlap between windows"=4,
+                        max_ncomps:"maximum number of SVD components"=5,
+                        smooth_fn:"smoothing function for baseline"=iterated_savgol_baseline2,
+                        fnkw:"arguments to pass to the smoothing function"=None):
     """
     Use smoothed principal components in spatial windows to estimate time-varying baseline fluorescence F0
     """

@@ -77,15 +77,15 @@ SVD_patch = namedtuple('SVD_patch', "signals filters center sq w_shape toverlap 
 
 class Windowed_tSVD:
     def __init__(self,
-                 patch_ssize=8,
-                 patch_tsize=600,
-                 soverlap=4,
-                 toverlap=100,
-                 min_ncomps=1,
-                 max_ncomps=100,
-                 do_pruning=_do_pruning_,
-                 tfilter=3,
-                 sfilter=3,
+                 patch_ssize:'spatial size of the patch'=8,
+                 patch_tsize:'temporal size of the patch'=600,
+                 soverlap:'spatial overlap between patches'=4,
+                 toverlap:'temporal overlap between patches'=100,
+                 min_ncomps:'minimal number of SVD components to use'=1,
+                 max_ncomps:'maximal number of SVD components'=100,
+                 do_pruning:'pruning of spatial coefficients'=_do_pruning_,
+                 tfilter:'window of adaptive median filter for temporal components'=3,
+                 sfilter:'window of adaptive median filter for spatial components'=3,
                  verbose=False):
 
         self.patch_ssize = patch_ssize
@@ -118,7 +118,7 @@ class Windowed_tSVD:
         if self.toverlap >= self.patch_tsize:
             self.toverlap = self.patch_tsize // 4
 
-        squares = make_grid(frames.shape,
+        squares = make_grid(np.shape(frames),
                             (self.patch_tsize, self.patch_ssize, self.patch_ssize),
                             (self.toverlap, self.soverlap, self.soverlap))
         if self.t_amf > 0:
@@ -138,7 +138,7 @@ class Windowed_tSVD:
 
             patch_frames = data[sq]
             L = len(patch_frames)
-            w_sh = patch_frames.shape
+            w_sh = np.shape(patch_frames)
 
             # now each column is signal in one pixel
             patch = patch_frames.reshape(L,-1)
@@ -168,7 +168,7 @@ class Windowed_tSVD:
             p = SVD_patch(svd_signals, W, patch_c, sq, w_sh, self.toverlap, self.soverlap)
             acc.append(p)
         self.patches_ = acc
-        self.data_shape_ = frames.shape
+        self.data_shape_ = np.shape(frames)
         return self.patches_
 
 
