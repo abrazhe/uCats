@@ -188,7 +188,7 @@ class Windowed_tSVD:
             t_crossfade = t_crossfade[:, None, None]
 
             psize = np.max(p.w_shape[1:])
-            scf = tanh_step(np.arange(psize), psize, p.soverlap, p.soverlap/2   )
+            scf = tanh_step(np.arange(psize), psize, p.soverlap, p.soverlap/2)
             scf = scf[:,None]
             w_crossfade = scf @ scf.T
             nr,nc = p.w_shape[1:]
@@ -343,7 +343,7 @@ def tanh_step(x, window, overlap, taper_k=None):
         taper_k = overlap / 10
     A = np.tanh((x+0.5-taper_width) / taper_k)
     B = np.tanh((window-(x+0.5)-taper_width) / taper_k)
-    return np.clip((1.01 +  A*B)/2, 0, 1)
+    return np.clip((1.01 + A*B)/2, 0, 1)
 
 
 # ## TODO: crossfade for overlapping patches, at least in time

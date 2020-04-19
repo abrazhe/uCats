@@ -1,14 +1,18 @@
 """
 Handling windowed views on data, aka "patches"
 """
+import sys
+
 import numpy as np
 
 import itertools as itt
 from numpy.linalg import svd
 from multiprocessing import Pool
+from scipy import ndimage as ndi
 
 from imfun.core import coords
 
+from ucats import cluster
 from .globals import _dtype_
 
 

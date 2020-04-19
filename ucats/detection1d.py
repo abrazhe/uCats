@@ -10,10 +10,11 @@ from scipy import ndimage as ndi
 
 import matplotlib.pyplot as plt
 
-from imfun.filt.dctsplines import l2spline, sp_decompose
+from imfun.filt.dctsplines import l2spline, sp_decompose, l1spline
 from imfun.core import extrema
 from imfun import bwmorph
 
+from ucats import baselines
 from .scramble import local_jitter
 from .utils import smoothed_medianf, rolling_sd_pd, find_bias
 
@@ -182,7 +183,7 @@ def simple_pipeline_nojitter_(y, tau_label=1.5):
     Detect and reconstruct Ca-transients in 1D signal
     """
     ns = rolling_sd_pd(y)
-    low = y < 2.5 * np.median(y)
+    low = y < (2.5 * np.median(y))
     if not any(low):
         low = np.ones(len(y), np.bool)
     bias = np.median(y[low])

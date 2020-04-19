@@ -1,4 +1,8 @@
+import sys
+
 import numpy as np
+from fastdtw import fastdtw
+from imfun.filt import l2spline
 
 from scipy import ndimage as ndi
 
@@ -8,6 +12,12 @@ from imfun import core
 
 #from fastdtw import fastdtw
 from imfun import core
+
+from scipy import ndimage
+
+from ucats import mad_std
+from ucats.decomposition import min_ncomp
+from ..globals import _dtype_
 
 
 def apply_warp_path(v, path):

@@ -10,6 +10,7 @@ from numpy import linalg
 
 from scipy import cluster as sp_clust
 from scipy.cluster import hierarchy as sp_hierarchy
+from sklearn import metrics as skmetrics
 
 from sklearn import cluster as skclust
 
@@ -167,8 +168,8 @@ class DumbConsensusClusterer:
 class UMAP_Preprocessed:
     def __init__(self, *args, **kwargs):
         self.preprocessor = UMAP(n_neighbors=30, min_dist=0, n_components=2)
-        #self.clusterer = skcluster.DBSCAN(**kwargs) # this is not *H*dbscan, is it?
-        #self.clusterer = hdbscan.HDBSCAN()
+        self.clusterer = None
+
     def fit_predict(self, X):
         X = self.preprocessor.fit_transform(X)
         return self.clusterer.fit_predict(X)

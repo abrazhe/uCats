@@ -11,7 +11,7 @@ from imfun.filt.dctsplines import l2spline, l1spline
 from imfun.core import ah
 
 from .globals import _dtype_
-from .masks import threshold_object_size
+from .masks import threshold_object_size, select_overlapping, percentile_th_frames, opening_of_closing
 
 from skimage.restoration import denoise_tv_chambolle
 
@@ -279,7 +279,7 @@ def iterative_noise_sd(data, cut=5, axis=None, niter=10):
         sd = np.std(data, axis=axis)
         mu = np.mean(data, axis=axis)
         outliers = np.abs(data - mu) > cut * sd
-        data = where(outliers, data * 0.5, data)
+        data = np.where(outliers, data * 0.5, data)
         #data[outliers] = cut*sd
     return sd
 

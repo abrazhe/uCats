@@ -807,7 +807,7 @@ def animate_events(frames, ev_coll, args,
 
 def make_mask(dfof, nsd0):
     th = ucats.utils.percentile_th_frames(dfof,2.5)
-    mask_simple1 = (dfof1 > th)*(dfof1>0.05)
+    mask_simple1 = (dfof1 > th)*(dfof1>0.05)  # should be dfof?
     mask_simple1 = mask_simple1 + ndi.median_filter(mask_simple1, 3)
     mask_simple1 = np.array([ucats.masks.cleanup_mask(m, 2,5) for m in mask_simple1])
 
