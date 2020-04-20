@@ -2,7 +2,19 @@
 Higher-level functions based on the rest of the code.
 Can serve as usage examples, possibly outdated.
 """
+import numpy as np
 
+from ucats.baselines import multi_scale_simple_baseline, calculate_baseline_pca_asym
+from ucats.denoising import patch_pca_denoise2
+from ucats.events import EventCollection
+from .detection1d import simple_pipeline_, percentile_label
+from .masks import opening_of_closing
+from .patches import signals_from_array_correlation, signals_from_array_pca_cluster, signals_from_array_avg, \
+    combine_weighted_signals
+from .utils import process_signals_parallel, activity_mask_median_filtering, mad_std, avg_filter_greater, \
+    smoothed_medianf
+from scipy import ndimage as ndi
+from matplotlib import pyplot as plt
 
 def make_enh4(frames,
               pipeline=simple_pipeline_,
@@ -145,7 +157,7 @@ def make_denoising_animation(frames, yhat, f0, movie_name, start_loc=None, path=
 
     if (start_loc is None):
         f = ndimage.gaussian_filter(np.max(yhat - f0, 0), 3)
-        k = argmax(ravel(f))
+        k = np.argmax(np.ravel(f))
         nrows, ncols = frames[0].shape
         loc = (k // ncols, k % ncols)
     else:
@@ -171,11 +183,11 @@ def make_denoising_animation(frames, yhat, f0, movie_name, start_loc=None, path=
                                 axis=0)).astype(int)
     else:
         locs = []
-        current_loc = array(start_loc)
-        apath = asarray(path)
+        current_loc = np.array(start_loc)
+        apath = np.asarray(path)
         keypoints = apath[:, 2]
         for kf in range(L):
-            ktarget = argmax(keypoints >= kf)
+            ktarget = np.argmax(keypoints >= kf)
             target = apath[ktarget, :2][::-1]    # switch from xy to rc
             kft = keypoints[ktarget]
             #print(target, current_loc)
@@ -200,7 +212,7 @@ def make_denoising_animation(frames, yhat, f0, movie_name, start_loc=None, path=
     axbottom.legend(loc='upper right')
     nrows, ncols = fsh
 
-    nn = np.concatenate([np.diag(ones(2, np.int)), -np.diag(ones(2, np.int))])
+    nn = np.concatenate([np.diag(np.ones(2, np.int)), -np.diag(np.ones(2, np.int))])
 
     loc = [loc]
 
@@ -222,7 +234,7 @@ def make_denoising_animation(frames, yhat, f0, movie_name, start_loc=None, path=
         #loc[0] = (k//ncols, k%ncols )
         #loc[0] = loc[0] + nn[k]
         loc[0] = locs[frame_ind]
-        loc[0] = asarray((loc[0][0] % nrows, loc[0][1] % ncols), np.int)
+        loc[0] = np.asarray((loc[0][0] % nrows, loc[0][1] % ncols), np.int)
         xsl = (slice(None), loc[0][0], loc[0][1])
         h1.set_data(frames[frame_ind])
         h2.set_data(yhat[frame_ind])
@@ -255,7 +267,7 @@ def roticity_fft(data, period_low=100, period_high=5, npc=6):
     Xc = data.mean(0)
     data = data - Xc
     npc = min(npc, data.shape[-1])
-    u, s, vh = svd(data, full_matrices=False)
+    u, s, vh = np.linalg.svd(data, full_matrices=False)
     s2 = s**2 / (s**2).sum()
     u = (u - u.mean(0))[:, :npc]
     p = (abs(fft.fft(u, axis=0))**2)[:L // 2]

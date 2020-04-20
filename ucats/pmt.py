@@ -40,7 +40,7 @@ def estimate_offset2(frames, smooth=None, nsteps=100, with_plot=False):
             if len(peaks) <= 1:
                 break
         if not len(peaks):
-            offset = biases[argmax(dv)]
+            offset = biases[np.argmax(dv)]
     if with_plot:
         plt.figure()
         plt.plot(biases, v, '.-')

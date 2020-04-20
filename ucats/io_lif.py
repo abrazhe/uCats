@@ -53,7 +53,7 @@ class LIF_record_meta:
         if '@DeltaT' in p:
             return (float(p['@DeltaT']), p['@DeltaTUnit'])
         else:
-            return (0, '_')
+            return 0, '_'
 
     def load_timelapse(self, name):
         "Loads a TXY record"
