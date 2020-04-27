@@ -37,8 +37,10 @@ class EventCollection:
                  min_duration=3,
                  min_area=9,
                  peak_threshold=0.05):
+
         self.min_duration = min_duration
         self.labels, self.objs = segment_events(frames, threshold)
+
         self.coll = [
             dict(duration=self.event_duration(k),
                  area=self.event_area(k),
@@ -48,6 +50,7 @@ class EventCollection:
                  start=self.objs[k][0].start,
                  idx=k) for k in range(len(self.objs))
         ]
+
         self.filtered_coll = [c for c in self.coll
                               if c['duration']>min_duration \
                               and c['peak']>peak_threshold\
@@ -94,6 +97,15 @@ class EventCollection:
 
     def to_DataFrame(self):
         return pd.DataFrame(self.filtered_coll)
+
+    def flatmask_fullframe(self, k):
+        o = self.objs[k]
+        mask = self.project_event_mask(k)
+        frame_shape = self.labels.shape[1:]
+        out = np.zeros(frame_shape)
+        frame_crop = o[1:]
+        out[frame_crop] = mask
+        return out
 
     def to_csv(self, name):
         df = self.to_DataFrame()

@@ -62,6 +62,14 @@ def zproject_top_average_frames(frames, percentile=85):
     return out
 
 
+def scrambling_anti_aliasing(frames, niters=1, spatial_sigma=0.33, temporal_sigma=0.5, verbose=False):
+    out = np.zeros_like(frames)
+    for i in tqdm(range(niters), disable=not verbose):
+        out += ucats.scramble.scramble_data_local_jitter(
+            np.array([ucats.scramble.local_jitter2d(f, spatial_sigma) for f in tqdm(frames, disable=verbose < 2)]),
+            w=temporal_sigma)
+    return out/niters
+
 @jit
 def avg_filter_greater(m, th=0):
     nr, nc = m.shape
@@ -279,7 +287,7 @@ def iterative_noise_sd(data, cut=5, axis=None, niter=10):
         sd = np.std(data, axis=axis)
         mu = np.mean(data, axis=axis)
         outliers = np.abs(data - mu) > cut * sd
-        data = where(outliers, data * 0.5, data)
+        data = np.where(outliers, data * 0.5, data)
         #data[outliers] = cut*sd
     return sd
 
