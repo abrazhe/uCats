@@ -169,7 +169,6 @@ def iterated_l1_baseline(y, smooth1=10, smooth2=25, **kwargs):
                                         **kwargs)
 
 
-
 def iterated_savgol_baseline2(y,
                               window=99,
                               window2=None,
@@ -182,13 +181,13 @@ def iterated_savgol_baseline2(y,
     window2 = window*4 - 1 if not window2 else window2
     window2 = make_odd(np.minimum(window2, len(y) - 1))
 
-    fnkw1,fnkw2 = (dict(window_length=w,polyorder=k)
-                   for w,k in zip((window, window2), (order, order2)))
+    fnkw1, fnkw2 = (dict(window_length=w, polyorder=k)
+                    for w, k in zip((window, window2), (order, order2)))
 
-    b =  iterated_smoothing_baseline2(y,
-                                      smooth_fn=signal.savgol_filter,
-                                      fnkw=fnkw1, fnkw2=fnkw2,
-                                      **kwargs)
+    b = iterated_smoothing_baseline2(y,
+                                     smooth_fn=signal.savgol_filter,
+                                     fnkw=fnkw1, fnkw2=fnkw2,
+                                     **kwargs)
     return l2spline(b, post_smooth)
 
 
@@ -307,7 +306,7 @@ def first_pc_baseline(frames,
 def multi_scale_simple_baseline(y,
                                 plow=50,
                                 th=3,
-                                smooth_levels=[10, 20, 40, 80, 160],
+                                smooth_levels=(10, 20, 40, 80, 160),
                                 ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)

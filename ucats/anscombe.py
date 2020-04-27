@@ -2,8 +2,10 @@ import numpy as np
 
 
 class Anscombe:
-    "Variance-stabilizing transformation"
+    """Variance-stabilizing transformation"""
+
     vmin = 2*np.sqrt(3/8)
+
     @staticmethod
     def transform(data):
         return 2 * (np.maximum(data,0) + 3/8)**0.5

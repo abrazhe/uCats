@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 
 from scipy import ndimage as ndi
@@ -9,6 +11,7 @@ from ..masks import threshold_object_size
 from ..utils import (avg_filter_greater, mad_std, smoothed_medianf, find_bias)
 
 from ..decomposition import min_ncomp
+from ..globals import _dtype_
 
 from .block_svd_denoise_and_separate_ import block_svd_separate_tslices, block_svd_denoise_and_separate
 # TODO: make more sane imports

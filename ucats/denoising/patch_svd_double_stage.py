@@ -193,7 +193,7 @@ class NL_Windowed_tSVD(Windowed_tSVD):
                  temporal_mode='flatTV-means',
                  tv_samples_per_cluster=10,
                  **kwargs):
-        super(NL_Windowed_tSVD, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
         self.Nhood = Nhood
         self.n_clusters = n_clusters
@@ -211,7 +211,7 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         return self.inverse_transform(coll)
 
     def fit_transform(self, frames, do_signals=None, do_spatial=None):
-        coll = super(NL_Windowed_tSVD, self).fit_transform(frames)
+        coll = super().fit_transform(frames)
 
         if do_signals is None: do_signals = self.do_signals
         if do_spatial is None: do_spatial = self.do_spatial

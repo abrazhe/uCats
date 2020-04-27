@@ -1,8 +1,10 @@
+import sys
+
 import numpy as np
 import itertools as itt
 
 from ..decomposition import min_ncomp
-
+from ..globals import _dtype_
 
 def dmdf_new(X, Y=None, r=None, sort_explained=False):
     if Y is None:
@@ -69,7 +71,7 @@ def _patch_denoise_dmd(data,
 
     def _next_x_prediction(X, lam, Phi):
         Xn = X.reshape(-1, 1)
-        b = lstsq(Phi, Xn, rcond=None)[0]
+        b = np.linalg.lstsq(Phi, Xn, rcond=None)[0]
         Xnext = (Phi @ np.diag(lam) @ b.reshape(-1, 1)).real
         return Xnext
 

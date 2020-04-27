@@ -22,8 +22,8 @@ from ..patches import make_weighting_kern
 from ..baselines import find_bias, percentile_baseline
 from ..utils import smoothed_medianf, mad_std
 from ..globals import _dtype_
-from ..masks import threshold_object_size
-from ..detection1d import percentile_label
+from ..masks import threshold_object_size, cleanup_cluster_map
+from ..detection1d import percentile_label, simple_pipeline_
 
 
 def correct_small_loads(points, affs, min_loads=5, niter=1):
