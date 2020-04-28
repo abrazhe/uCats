@@ -11,12 +11,13 @@ from imfun import bwmorph, cluster
 @jit
 def percentile_th_frames(frames, plow=5):
     sh = frames[0].shape
-    medians = np.median(frames, 0)
-    out = np.zeros(medians.shape)
+    #medians = np.median(frames, axis=0)
+    out = np.zeros(sh)
     for r in range(sh[0]):
         for c in range(sh[1]):
             v = frames[:, r, c]
-            mu = medians[r, c]
+            #mu = medians[r, c]
+            mu = np.median(v)
             out[r, c] = -np.percentile(v[v <= mu], plow)
     return out
 
@@ -35,15 +36,19 @@ def refine_mask_by_percentile_filter(m,
     return out
 
 
-def select_overlapping(mask, seeds):
+def select_overlapping(mask, seeds, neg=False):
     labels, nl = ndi.label(mask)
     objs = ndi.find_objects(labels)
     out = np.zeros_like(mask)
     for k, o in enumerate(objs):
-        cond = labels[o] == k + 1
-        if np.any(seeds[o][cond]):
-            out[o][cond] = True
+        overlap = labels[o] == k + 1
+        cond = np.any(seeds[o][overlap])
+        if neg:
+            cond = not cond
+        if cond:
+            out[o][overlap] = True
     return out
+
 
 
 def threshold_object_size(mask, min_size):
