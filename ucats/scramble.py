@@ -65,9 +65,8 @@ def scramble_data_local_jitter(frames, w=10):
 def jitter_anti_aliasing(frames, niters=1, spatial_sigma=0.33, temporal_sigma=0.5, verbose=False):
     out = np.zeros_like(frames)
     for i in range(niters):
-        out += scramble_data_local_jitter(
-                   np.array([local_jitter2d(f, spatial_sigma) for f in frames),
-                   w=temporal_sigma)
+        spj = np.array([local_jitter2d(f, spatial_sigma) for f in frames], w=temporal_sigma)
+        out += scramble_data_local_jitter(spj)
     return out/niters
 
 def shuffle_signals(m):

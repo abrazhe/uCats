@@ -500,6 +500,20 @@ def calculate_baseline_pca_asym(frames,
     return frames_w
 
 
+def rolled_baseline(v, nrolls=5, baseline_fn=iterated_savgol_baseline2,  **kwargs):
+    L = len(v)
+    rolls = np.arange(0, L, L//nrolls)
+    baseline_estimates = []
+    for r in rolls:
+        y = np.roll(v, r)
+        b = baseline_fn(y, **kwargs)
+        baseline_estimates.append(np.roll(b,-r))
+
+    #TODO: better estimate than median?
+    bmed = np.median(baseline_estimates, axis=0)
+    #bmean = np.mean(baseline_estimates, axis=0)
+    return bmed
+
 # def calculate_baseline(frames,
 #                        pipeline=multi_scale_simple_baseline,
 #                        stride=2,
