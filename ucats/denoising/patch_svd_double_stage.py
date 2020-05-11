@@ -97,6 +97,7 @@ def windowed_flat_tv(img,
     nr, nc = img.shape
     counts = np.zeros(img.shape)
     out = np.zeros(img.shape)
+    window = np.minimum(window, nc)
     tslices = [x[0] for x in make_grid((nc, 1), window, overlap)]
     tslices = [(slice(None), t) for t in tslices]
 
@@ -123,7 +124,8 @@ def windowed_flat_tv(img,
                 patch_approx[labels == i] = patch[labels == i].mean(0)
             out[tslice] += patch_approx
         counts[tslice] += 1
-    out = out / counts
+    out = out / (1e-12 + counts)
+    out = out * (counts > 0)
     return out
 
 
@@ -263,13 +265,18 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         ]
         return self.patches_
 
-    def update_signals(self, collection=None, **kwargs):
+    def update_signals(self, collection=None, temporal_mode=None, **kwargs):
+
         if collection is None:
             collection = self.patches_
+
+        if temporal_mode is None:
+            temporal_mode = self.temporal_mode
+
         kwargs = dict(field='signals',
                       clustering_algorithm=self.clustering_algorithm,
                       n_clusters=self.n_clusters,
-                      mode=self.temporal_mode,
+                      mode=temporal_mode,
                       tv_samples_per_cluster=self.tv_samples_per_cluster,
                       tv_sigma=self.tv_sigma,
                       tv_niters=self.tv_niters,
@@ -329,7 +336,8 @@ class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
             nur,nuc = update.shape[1:]
             nrx = min(nr,nur)
             ncx = min(nc, nuc)
-            rec[:, :nrx, :ncx] = rec[:, :nrx, :ncx] + update[:, :nrx, :ncx]
+            rec[:, :nrx, :ncx] += update[:, :nrx, :ncx]
+            #rec[:, :nrx, :ncx] = rec[:, :nrx, :ncx] + update[:, :nrx, :ncx]
         return rec
 
     def ms_fit_transform_ansc(self, frames, *args, **kwargs):
