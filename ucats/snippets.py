@@ -272,7 +272,7 @@ def roticity_fft(data, period_low=100, period_high=5, npc=6):
     u = (u - u.mean(0))[:, :npc]
     p = (abs(fft.fft(u, axis=0))**2)[:L // 2]
     nu = fft.fftfreq(len(data))[:L // 2]
-    nu_phys = (nu > 1 / period_low) * (nu < period_high)
+    nu_phys = (nu > 1 / period_low) * (nu < 1 / period_high)
     peak = 0
     sum_peak = 0
     for i in range(npc):

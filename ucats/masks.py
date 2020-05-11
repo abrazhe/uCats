@@ -50,6 +50,15 @@ def select_overlapping(mask, seeds, neg=False):
     return out
 
 
+def largest_region(mask):
+    labels, nlab = ndi.label(mask)
+    if nlab > 0:
+        objs = ndi.find_objects(labels)
+        sizes = [np.sum(labels[o]==k+1) for k,o in enumerate(objs)]
+        k = np.argmax(sizes)
+        return labels==k+1
+    else:
+        return mask
 
 def threshold_object_size(mask, min_size):
     labels, nlab = ndi.label(mask)
@@ -87,7 +96,6 @@ def mask2points(mask):
     return np.array([loc for loc in locations(mask.shape) if mask[loc]])
 
 
-from imfun import cluster
 
 
 def cleanup_mask(m, eps=3, min_pts=5):
