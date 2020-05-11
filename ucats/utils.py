@@ -1,4 +1,6 @@
 from functools import partial
+import itertools as itt
+from collections import defaultdict
 
 import numpy as np
 from scipy import ndimage as ndi
@@ -9,12 +11,17 @@ from numba import jit
 
 from imfun.filt.dctsplines import l2spline, l1spline
 from imfun.core import ah
+from imfun.core import extrema
+
 
 from .globals import _dtype_
 from .masks import threshold_object_size, select_overlapping, percentile_th_frames, opening_of_closing
 
 from skimage.restoration import denoise_tv_chambolle
 
+from tqdm.auto import tqdm
+
+from . import scramble
 
 def make_odd(n):
     return n + n%2 - 1
@@ -65,8 +72,9 @@ def zproject_top_average_frames(frames, percentile=85):
 def scrambling_anti_aliasing(frames, niters=1, spatial_sigma=0.33, temporal_sigma=0.5, verbose=False):
     out = np.zeros_like(frames)
     for i in tqdm(range(niters), disable=not verbose):
-        out += ucats.scramble.scramble_data_local_jitter(
-            np.array([ucats.scramble.local_jitter2d(f, spatial_sigma) for f in tqdm(frames, disable=verbose < 2)]),
+        out += scramble.scramble_data_local_jitter(
+            np.array([scramble.local_jitter2d(f, spatial_sigma)
+                      for f in tqdm(frames, disable=verbose < 2)]),
             w=temporal_sigma)
     return out/niters
 
@@ -88,6 +96,84 @@ def avg_filter_greater(m, th=0):
             if count > 0:
                 out[r, c] = acc / count
     return out
+
+def masks_at_levels(f, percentiles=(1,25,50,75,99)):
+    levels = np.percentile(f, percentiles)
+    ranges = [(levels[i], levels[i+1]) for i in range(0, len(levels)-1)]
+    masks = [(f>=l[0])*(f<l[1]) for l in ranges]
+    return masks
+
+def glue_adjacent(values):
+    acc = []
+    for v in values:
+        if v-1 in acc:
+            acc.append(v-1)
+        elif v+1 in acc:
+            acc.append(v+1)
+        else:
+            acc.append(v)
+    return acc
+
+def my_bin_count(values):
+    acc = defaultdict(lambda :0)
+    for v in values:
+        acc[v] += 1
+    return sorted(acc.items(), reverse=True, key=lambda k: acc[k])
+
+
+def find_jumps(y, pre_smooth=1.5, top_gradient=95, nhood=10):
+    ys_l1 = l1spline(y, 25)
+    ns = mad_std(y - ys_l1)
+    ys_tv = iterated_tv_chambolle(y, 1 * ns, 5)
+    v = ys_tv - ys_l1
+    if pre_smooth > 0:
+        v = l2spline(v, pre_smooth)
+    xfit, yfit, der1, maxima, minima = extrema.locextr(v, refine=False, sort_values=False)
+    _, _, _, vvmx, vvmn = extrema.locextr(np.cumsum(v), refine=False, sort_values=False)
+    vv_extrema = np.concatenate([vvmx, vvmn])
+    g = np.abs(der1)
+    ee = np.array(extrema.locextr(g, refine=False, sort_values=False, output='max'))
+    ee = ee[ee[:, 1] >= np.percentile(g, top_gradient)]
+    all_extrema = np.concatenate([maxima, minima])
+    extrema_types = {em: (1 if em in maxima else -1) for em in all_extrema}
+    jumps = []
+    Lee = len(ee)
+    for k, em in enumerate(ee[:, 0]):
+        if np.min(np.abs(em - vv_extrema)) < 2:
+            jumps.append(int(em))
+
+    shift = np.zeros(len(v))
+    L = len(v)
+    for k, j in enumerate(jumps):
+        if j < L - 1:
+            shift[j + 1] = np.mean(ys_tv[j + 1:min(j + nhood + 1, L)]) - np.mean(
+                ys_tv[max(0, j - nhood):j])
+    return jumps, np.cumsum(shift)
+
+
+def find_coherent_jumps(ylines, zth=1.5, min_crosses=2):
+    shifts = [find_jumps(y)[1] for y in ylines]
+    jumps = [np.where(np.abs(np.diff(s)) > zth*np.std(np.diff(y)))[0] for y,s in zip(ylines,shifts)]
+    klist = list(itt.chain(*jumps))
+    bins = []
+    if len(klist):
+        bins = my_bin_count(glue_adjacent(klist))
+        bins = [b[0] for b in bins if b[1] >= min_crosses]
+    return bins
+
+
+def collect_avg_dynamics(frames, mask_percentiles=(1,25,50,75,99)):
+    mf = np.mean(frames, axis=0)
+    masks = masks_at_levels(mf, )
+    ylines = np.array([[f[m].mean() for m in masks] for f in frames]).T
+    return ylines
+
+def find_fluorescence_shifts(frame_stacks, zth=3):
+    ylines = [collect_avg_dynamics(stack) for stack in frame_stacks]
+    jumps = [set(find_coherent_jumps(yl,zth,1)) for yl in ylines]
+    return set.intersection(*jumps)
+    #ylines = np.vstack(ylines)
+    return find_coherent_jumps(ylines,zth)
 
 
 def find_bias(y, th=3, ns=None):
