@@ -84,6 +84,7 @@ class Windowed_tSVD:
                  min_ncomps:'minimal number of SVD components to use'=1,
                  max_ncomps:'maximal number of SVD components'=100,
                  do_pruning:'pruning of spatial coefficients'=_do_pruning_,
+                 center_data:'subtract mean before SVD'=True,
                  tfilter:'window of adaptive median filter for temporal components'=3,
                  sfilter:'window of adaptive median filter for spatial components'=3,
                  verbose=False):
@@ -97,6 +98,8 @@ class Windowed_tSVD:
         self.min_ncomps = min_ncomps
         self.max_ncomps = max_ncomps
 
+        self.center_data = center_data
+
         self.do_pruning = do_pruning
         self.t_amf = tfilter
         self.s_amf = sfilter
@@ -104,14 +107,21 @@ class Windowed_tSVD:
         self.patches_ = None
         self.verbose = verbose
 
+
         self.fit_transform_ansc = Anscombe.wrap_input(self.fit_transform)
         self.inverse_transform_ansc = Anscombe.wrap_output(self.inverse_transform)
 
-    def fit_transform(self, frames):
+    def fit_transform(self, frames, cuts_in=None):
         data = np.array(frames).astype(_dtype_)
         acc = []
         #squares =  list(map(tuple, make_grid(d.shape[1:], patch_size,stride)))
         L = len(frames)
+        ## Sometimes chunks of the recording are missing and we want
+        ## to cut them out and sometimes we want to explicitly cut
+        ## the time_patches at certain points
+        ## This has to be done here
+        if cuts_in is None:
+            cuts_in = (0,L)
         self.patch_tsize = min(L, self.patch_tsize)
         # if self.toverlap >= self.patch_tsize:
         #     self.toverlap = self.patch_tsize // 2
@@ -142,8 +152,10 @@ class Windowed_tSVD:
 
             # now each column is signal in one pixel
             patch = patch_frames.reshape(L,-1)
-            patch_c = np.mean(patch, 0)
-            patch = patch - patch_c
+            patch_c = np.zeros(patch.shape[1])
+            if self.center_data:
+                patch_c = np.mean(patch, 0)
+                patch = patch - patch_c
 
             u, s, vh = np.linalg.svd(patch.T, full_matrices=False)
             rank = max(self.min_ncomps, min_ncomp(s, patch.shape) + 1)
