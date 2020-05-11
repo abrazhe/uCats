@@ -1,10 +1,23 @@
 import numpy as np
 
+from numba import jit
+
+_vmin_ = 2*np.sqrt(3/8)
+
+@jit
+def approximate_inverse_transform(d):
+    d = np.maximum(d, _vmin_ + 2e-16)
+    dsq = d*d
+    a = np.sqrt(3/2)
+    return dsq/4 - 1/8  + (a/4)/d - (11/8)/dsq + a*(5/8)/(dsq*d)
+
+
+
 
 class Anscombe:
     """Variance-stabilizing transformation"""
 
-    vmin = 2*np.sqrt(3/8)
+    vmin = _vmin_
 
     @staticmethod
     def transform(data):
@@ -12,10 +25,24 @@ class Anscombe:
 
     @staticmethod
     def inverse_transform(D):
-        D = np.maximum(D, Anscombe.vmin + 2e-16)
-        Dsq = D*D
-        a = np.sqrt(3/2)
-        return Dsq/4 - 1/8  + (a/4)/D - (11/8)/Dsq + a*(5/8)/(Dsq*D)
+        if np.iterable(D):
+            return Anscombe.inverse_transform_jit(D)
+        else:
+            return approximate_inverse_transform(D)
+
+    @staticmethod
+    @jit
+    def inverse_transform_jit(Din, Dout=None):
+        sh = Din.shape
+        if Dout is None:
+            Dout = np.zeros_like(Din)
+        Dout = np.ravel(Dout)
+        Din = np.ravel(Din)
+        L = len(Din)
+        for i in range(L):
+            Dout[i] = approximate_inverse_transform(Din[i])
+        return Dout.reshape(sh)
+
 
     @staticmethod
     def wrap_input(func):
