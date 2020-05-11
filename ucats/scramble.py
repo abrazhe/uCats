@@ -19,13 +19,13 @@ def local_jitter(v, sigma=5):
     return vx
 
 @jit
-def local_jitter2d(img, sigma=3):
+def local_jitter2d(img, sigma_r=3, sigma_c=3):
     nr,nc = img.shape
     imgx = np.copy(img)
     for r in range(nr):
         for c in range(nc):
-            rj = r + np.int(np.round(np.random.randn() * sigma))
-            cj = c + np.int(np.round(np.random.randn() * sigma))
+            rj = r + np.int(np.round(np.random.randn() * sigma_r))
+            cj = c + np.int(np.round(np.random.randn() * sigma_c))
 
             rj = max(0, min(rj, nr-1))
             cj = max(0, min(cj, nc-1))
@@ -65,8 +65,17 @@ def scramble_data_local_jitter(frames, w=10):
 def jitter_anti_aliasing(frames, niters=1, spatial_sigma=0.33, temporal_sigma=0.5, verbose=False):
     out = np.zeros_like(frames)
     for i in range(niters):
-        spj = np.array([local_jitter2d(f, spatial_sigma) for f in frames], w=temporal_sigma)
-        out += scramble_data_local_jitter(spj)
+        if np.max(spatial_sigma) >  0:
+            if np.ndim(spatial_sigma) < 1:
+                sigma_r = sigma_c = spatial_sigma
+            else:
+                sigma_r,sigma_c = spatial_sigma[:2]
+            spj = np.array([local_jitter2d(f, sigma_r, sigma_c) for f in frames])
+        else:
+            spj = frames
+        if temporal_sigma > 0:
+            spj = scramble_data_local_jitter(spj, w=temporal_sigma)
+        out += spj
     return out/niters
 
 def shuffle_signals(m):
