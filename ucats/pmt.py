@@ -57,7 +57,8 @@ def estimate_gain_and_offset(frames,
                              ntries=200,
                              with_plot=False,
                              save_to=None,
-                             return_type='mean'):
+                             return_type='mean',
+                             verbose=False):
     """
     Estimage gain and offset parameters used by the imaging system
     For a given stack of frames, extract many small cubic patches and then fit a line
@@ -107,9 +108,10 @@ def estimate_gain_and_offset(frames,
         'ransac': (gainx, offsetx)
     }
 
-    print('RANSAC: Estimated gain %1.2f and offset %1.2f' % (results['ransac']))
-    print('ML: Estimated gain %1.2f and offset %1.2f' % (results['mean']))
-    print('Med: Estimated gain %1.2f and offset %1.2f' % (results['median']))
+    if verbose:
+        print('RANSAC: Estimated gain %1.2f and offset %1.2f' % (results['ransac']))
+        print('ML: Estimated gain %1.2f and offset %1.2f' % (results['mean']))
+        print('Med: Estimated gain %1.2f and offset %1.2f' % (results['median']))
 
     min_gain, min_offset = np.amin(gains), np.amin(offsets)
 
