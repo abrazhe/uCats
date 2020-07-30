@@ -98,7 +98,7 @@ def windowed_flat_tv(img,
     counts = np.zeros(img.shape)
     out = np.zeros(img.shape)
     window = np.minimum(window, nc)
-    tslices = [x[0] for x in make_grid((nc, 1),  , overlap)]
+    tslices = [x[0] for x in make_grid((nc, 1), window, overlap)]
     tslices = [(slice(None), t) for t in tslices]
 
     if samples_per_cluster is not None:
