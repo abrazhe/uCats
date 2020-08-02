@@ -10,9 +10,10 @@ from numpy import linalg
 
 from scipy import cluster as sp_clust
 from scipy.cluster import hierarchy as sp_hierarchy
-from sklearn import metrics as skmetrics
 
+from sklearn import metrics as skmetrics
 from sklearn import cluster as skclust
+from sklearn import dummy as skdummy
 
 import hdbscan
 from umap import UMAP
@@ -208,5 +209,5 @@ clustering_dispatcher_ = {
     'UMAP_DBSCAN'.lower(): lambda nclust: UMAP_HDBSCAN(min_samples=15),
     'UMAP_KMeans'.lower(): lambda nclust: UMAP_KMeans(nclust),
     'UMAP_MiniBatchKMeans'.lower(): lambda nclust: UMAP_MiniBatchKMeans(nclust),
-    'ConsensusKMeans'.lower(): lambda nclust: DumbConsensusClusterer(nclust)
+    'ConsensusKMeans'.lower(): lambda nclust: DumbConsensusClusterer(nclust),
 }

@@ -27,6 +27,7 @@ from ..patches import make_grid, slice_overlaps_square
 from ..utils import mad_std
 
 _nclusters_ = 16
+_large_nsamples = 4000
 
 # TODO:
 # - [ ] Exponential-family PCA
@@ -140,6 +141,9 @@ def windowed_flat_tv(img,
 # TODO: good crossfade and smaller overlap
 
 
+
+
+
 def process_flat_collection(samples,
                             n_clusters=_nclusters_,
                             clustering_algorithm='MiniBatchKMeans',
@@ -158,15 +162,37 @@ def process_flat_collection(samples,
         out_kind = 'sorted' if 'sort' in mode.lower() else 'means'
         tv_sigma = kwargs['tv_sigma'] if 'tv_sigma' in kwargs else 1
         tv_niters = kwargs['tv_niters'] if 'tv_niters' in kwargs else 3
-        if 'tv_samples_per_cluster' in kwargs:
-            samples_per_cluster = kwargs['tv_samples_per_cluster']
-        else:
-            samples_per_cluster = np.int(np.round(len(samples) / nclust))
-        samples_approx = windowed_flat_tv(samples,
-                                          mode=out_kind,
-                                          samples_per_cluster=samples_per_cluster,
-                                          tv_sigma=tv_sigma,
-                                          tv_niters=tv_niters)
+
+        Nsamples = len(samples)
+
+        labels = np.ones(len(samples))
+        sample_batches = [(1,samples)]
+
+        if Nsamples > _large_nsamples:
+            npartition = np.int(np.round(Nsamples / _large_nsamples)) + 1
+            #clustx = clustering_dispatcher_['kmeans'](npartition)
+            #clustx.batch_size = min(clustx.batch_size, Nsamples)
+            #u,s,vh = np.linalg.svd(samples,False)
+            #labels = clustx.fit_predict(u[:,:3])
+            labels = np.random.randint(1,npartition+1,size=Nsamples)
+            sample_batches = [(i,samples[labels==i]) for i in np.unique(labels)]
+
+        for i,batch in sample_batches:
+            if 'tv_samples_per_cluster' in kwargs:
+                samples_per_cluster = kwargs['tv_samples_per_cluster']
+            else:
+                samples_per_cluster = np.int(np.round(len(batch) / nclust))
+
+            #print(len(batch))
+            if len(batch):
+                batch_approx = windowed_flat_tv(batch,
+                                                mode=out_kind,
+                                                samples_per_cluster=samples_per_cluster,
+                                                tv_sigma=tv_sigma,
+                                                tv_niters=tv_niters)
+                samples_approx[labels==i] = batch_approx
+
+
     elif 'cluster' in mode.lower():
         if nclust > 1:
             labels = clust.fit_predict(samples)
