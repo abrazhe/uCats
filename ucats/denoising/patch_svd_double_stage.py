@@ -358,11 +358,13 @@ class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
             self.data_shape_ = fsh
             update = self.inverse_transform(coll)
             if scale > 1:
-                update = sktransform.rescale(update, (1,scale,scale))
+                #update = sktransform.rescale(update, (1,scale,scale))
+                update = sktransform.rescale(update, (1,scale,scale), multichannel=False)
             nur,nuc = update.shape[1:]
             nrx = min(nr,nur)
             ncx = min(nc, nuc)
             rec[:, :nrx, :ncx] += update[:, :nrx, :ncx]
+            #rec[:, :nrx, :ncx] = rec[:, :nrx, :ncx] + update[:, :nrx, :ncx]
             #rec[:, :nrx, :ncx] = rec[:, :nrx, :ncx] + update[:, :nrx, :ncx]
         return rec
 
