@@ -17,7 +17,6 @@ from .utils import adaptive_filter_1d, adaptive_filter_2d
 
 from .globals import _dtype_
 
-_baseline_smoothness_ = 300
 _do_pruning_ = False
 
 
@@ -72,7 +71,7 @@ def svd_flip_signs(u, vh, mode='v'):
     return u, vh
 
 
-SVD_patch = namedtuple('SVD_patch', "signals filters center sq w_shape toverlap soverlap")
+SVD_patch = namedtuple('SVD_patch', "signals filters pnorm center sq w_shape toverlap soverlap")
 
 
 class Windowed_tSVD:
@@ -152,6 +151,7 @@ class Windowed_tSVD:
 
             # now each column is signal in one pixel
             patch = patch_frames.reshape(L,-1)
+            #pnorm = np.linalg.norm(patch)
             patch_c = np.zeros(patch.shape[1])
             if self.center_data:
                 patch_c = np.mean(patch, 0)
@@ -162,7 +162,6 @@ class Windowed_tSVD:
             rank = min(rank, self.max_ncomps)
             u, vh = svd_flip_signs(u[:, :rank], vh[:rank])
 
-
             if self.do_pruning:
                 w = weight_components(patch.T, vh, rank)
             else:
@@ -170,14 +169,16 @@ class Windowed_tSVD:
 
             svd_signals, loadings = vh[:rank], u[:, :rank] * w
             s = s[:rank]
-            svd_signals = svd_signals * s[:, None]
+            pnorm = (s**2).sum()**0.5
+            svd_signals = svd_signals * s[:, None]**0.5
+            loadings = loadings * s[None,:]**0.5
 
             if self.t_amf > 0:
                 svd_signals = np.array([tsmoother(v) for v in svd_signals])
             W = loadings.T
             if (self.s_amf > 0) and (patch.shape[1] == self.patch_ssize**2):
                 W = np.array([ssmoother(v) for v in W])
-            p = SVD_patch(svd_signals, W, patch_c, sq, w_sh, self.toverlap, self.soverlap)
+            p = SVD_patch(svd_signals, W, pnorm, patch_c, sq, w_sh, self.toverlap, self.soverlap)
             acc.append(p)
         self.patches_ = acc
         self.data_shape_ = np.shape(frames)
@@ -211,6 +212,10 @@ class Windowed_tSVD:
 
 
             rec = (p.signals.T @ p.filters).reshape(p.w_shape)
+
+            rnorm = np.linalg.norm(rec)
+            #rec = rec*p.pnorm/rnorm
+
             rec += p.center.reshape(p.w_shape[1:])
             out_data[tuple(p.sq)] += rec * t_crossfade * w_crossfade
 

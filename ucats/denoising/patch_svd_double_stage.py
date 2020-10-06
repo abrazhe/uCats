@@ -312,7 +312,9 @@ class NL_Windowed_tSVD(Windowed_tSVD):
     def update_spatial(self, collection=None):
         if collection is None:
             collection = self.patches_
-        kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd', n_clusters=1)
+        #kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd', n_clusters=1)
+        kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd')
+        #kwargs = dict(field='filters', Nhood=self.Nhood, mode='flatTV-means')#, n_clusters=1)
         return self.nl_update_components(collection, **kwargs)
 
 
