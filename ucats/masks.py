@@ -107,22 +107,44 @@ def cleanup_mask(m, eps=3, min_pts=5):
     points_f = (p for p, l in zip(p, labels) if l >= 0)
     return points2mask(points_f, m.shape)
 
+def correct_small_loads(points, affs, min_loads=5, niter=1):
+    for j in range(niter):
+        new_affs = np.copy(affs)
+        labels = np.unique(affs)
+        loads = np.array([np.sum(affs == k) for k in labels])
+        if not np.any(loads < min_loads):
+            break
+        centers = np.array([np.mean(points[affs == k], 0) for k in labels])
+        point_ind = np.arange(len(points))
+        for li in np.where(loads < min_loads)[0]:
+            cond = affs == labels[li]
+            for point, ind in zip(points[cond], point_ind[cond]):
+                dists = cluster.metrics.euclidean(point, centers)
+                dists[loads < min_loads] = np.amax(dists) + 1000
+                k = np.argmin(dists)
+                new_affs[ind] = k
 
-@jit
-def cleanup_cluster_map(m, niter=1):
+        affs = new_affs.copy()
+    return new_affs
+
+def cleanup_cluster_map(m, min_neighbors=1, niter=1):
     Nr, Nc = m.shape
     cval = np.min(m) - 1
     m = np.pad(m, 1, mode='constant', constant_values=cval)
-    for j in range(niter):
-        for r in range(1, Nr):
-            for c in range(1, Nc):
-                me = m[r, c]
-                neighbors = np.array(
-                    [m[(r + 1), c], m[(r - 1), c], m[r, (c + 1)], m[r, (c - 1)]])
-                if not np.any(neighbors == me):
-                    neighbors = neighbors[neighbors > cval]
-                    if len(neighbors):
-                        m[r, c] = neighbors[np.random.randint(len(neighbors))]
-                    else:
-                        m[r, c] = cval
+    @jit
+    def _process(m):
+        for j in range(niter):
+            for r in range(1, Nr):
+                for c in range(1, Nc):
+                    me = m[r, c]
+                    neighbors = np.array(
+                        [m[(r + 1), c], m[(r - 1), c], m[r, (c + 1)], m[r, (c - 1)]])
+                    if not np.sum(neighbors == me) >= min_neighbors:
+                        neighbors = neighbors[neighbors > cval]
+                        if len(neighbors):
+                            m[r, c] = neighbors[np.random.randint(len(neighbors))]
+                        else:
+                            m[r, c] = cval
+        return m
+    m = _process(m)
     return m[1:-1, 1:-1]

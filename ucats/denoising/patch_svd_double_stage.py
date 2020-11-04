@@ -148,6 +148,7 @@ def process_flat_collection(samples,
                             n_clusters=_nclusters_,
                             clustering_algorithm='MiniBatchKMeans',
                             mode='cluster-svd',
+                            labels=None,
                             **kwargs):
 
     nclust = min(n_clusters, len(samples))
@@ -194,10 +195,12 @@ def process_flat_collection(samples,
 
 
     elif 'cluster' in mode.lower():
-        if nclust > 1:
-            labels = clust.fit_predict(samples)
-        else:
-            labels = np.ones(len(samples))
+        if labels is None:
+            if nclust > 1:
+                labels = clust.fit_predict(samples)
+            else:
+                labels = np.ones(len(samples))
+
         if 'svd' in mode.lower():
             for i in np.unique(labels):
                 group = labels == i
@@ -233,6 +236,7 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         self.do_spatial = do_spatial
         self.do_signals = do_signals
         self.denoise_ansc = Anscombe.wrap(self.denoise)
+        self.do_shift_expansion_=False
 
     def denoise(self, frames):
         coll = self.fit_transform(frames)
@@ -274,6 +278,13 @@ class NL_Windowed_tSVD(Windowed_tSVD):
             samples = [getattr(c, field)
                        for c in collection if _is_local_patch(c.sq, sqx)]
             flat_samples = np.vstack(samples)
+
+            # expand dictionary by temporal shifts
+            if field=='signals' and self.do_shift_expansion_:
+                add_samples = np.vstack([[np.roll(v,i) for i in (-2,-1,1,2)] for v in flat_samples])
+                flat_samples = np.vstack([flat_samples, add_samples])
+
+
             loop.set_description(f'Updating window with {len(flat_samples)} {field}')
             approx = process_flat_collection(flat_samples, **kwargs)
             kstart = 0
