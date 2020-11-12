@@ -383,6 +383,7 @@ class Windowed_tHOSVD():
                  center_data:'subtract mean before SVD'=True,
                  tfilter:'window of adaptive median filter for temporal components'=3,
                  sfilter:'window of adaptive median filter for spatial components'=3,
+                 compress_core_tensor_percentile=0,
                  verbose=False):
 
         self.patch_ssize = patch_ssize
@@ -401,6 +402,8 @@ class Windowed_tHOSVD():
 
         self.patches_ = None
         self.verbose = verbose
+        self.compress_core_tensor_p = compress_core_tensor_percentile
+
 
         self.fit_transform_ansc = Anscombe.wrap_input(self.fit_transform)
         self.inverse_transform_ansc = Anscombe.wrap_output(self.inverse_transform)
@@ -480,8 +483,11 @@ class Windowed_tHOSVD():
             w_crossfade = w_crossfade[None, :, :]
 
             counts[p.sq] += t_crossfade * w_crossfade
-
-            rec = p.hosvd.inverse_transform()
+            S, Ulist = p.hosvd.S_, p.hosvd.Ulist_
+            if self.compress_core_tensor_p > 0:
+                thresh = np.percentile(np.abs(S), self.compress_core_tensor_p)
+                S = np.where(np.abs(S)>=thresh, S, 0)
+            rec = p.hosvd.inverse_transform(S, Ulist    )
             rec += p.center
             out_data[p.sq] += rec * t_crossfade * w_crossfade
 
