@@ -57,17 +57,16 @@ class EventCollection:
                               and c['area']>min_area]
         if dfof_frames is not None:
             dfofx = ndi.gaussian_filter(dfof_frames, sigma=gf_sigma,
-                                        order=(1, 0,
-                                               0))    # smoothed first derivatives in time
+                                        order=(1, 0, 0))  # smoothed first derivatives in time
             nevents = len(self.coll)
             for (k, event), obj in zip(enumerate(self.coll), self.objs):
                 vmask = self.event_volume_mask(k)
                 areas = [np.sum(m) for m in vmask]
                 area_diff = ndi.gaussian_filter1d(areas, 1.5, order=1)
-                event['mean_area_expansion_rate'] = area_diff[
-                    area_diff > 0].mean() if any(area_diff > 0) else 0
-                event['mean_area_shrink_rate'] = area_diff[area_diff < 0].mean() if any(
-                    area_diff < 0) else 0
+                event['mean_area_expansion_rate'] = area_diff[area_diff > 0].mean()\
+                 if any(area_diff > 0) else 0
+                event['mean_area_shrink_rate'] = area_diff[area_diff < 0].mean()\
+                 if any(area_diff < 0) else 0
                 dx = dfofx[obj] * vmask
                 flatmask = np.sum(vmask, 0) > 0
                 event['mean_peak_rise'] = (dx.max(axis=0)[flatmask]).mean()

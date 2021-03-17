@@ -23,8 +23,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-from skimage.external import tifffile
-
+import tifffile
 import pandas as pd
 
 from imfun import fseq,core,ui
