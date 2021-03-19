@@ -14,6 +14,8 @@ from scipy.cluster import hierarchy as sp_hierarchy
 from sklearn import metrics as skmetrics
 from sklearn import cluster as skclust
 from sklearn import dummy as skdummy
+from sklearn.feature_extraction.image import grid_to_graph
+
 
 import hdbscan
 from umap import UMAP

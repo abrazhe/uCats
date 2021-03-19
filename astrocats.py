@@ -23,7 +23,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-from skimage.external import tifffile
+#from skimage.external import tifffile
 
 import pandas as pd
 
@@ -32,6 +32,8 @@ from imfun import multiscale
 from imfun import ofreg
 from imfun.ofreg import stackreg, imgreg
 from imfun.external import czifile
+
+import tifffile
 
 from imfun.filt.dctsplines import l2spline, l1spline
 
