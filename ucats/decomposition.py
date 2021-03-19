@@ -86,9 +86,11 @@ def unfolding(k,X):
     dimlist[k],dimlist[0] = 0,k
     return np.transpose(X,dimlist).reshape(sh[k],-1)
 
+#import tensorflow as tf
 def modalsvd(k,X):
     kX = unfolding(k,X)
     return np.linalg.svd(kX, full_matrices=False)
+    #return tf.linalg.svd(kX, full_matrices=False)
 
 
 class HOSVD:
@@ -105,10 +107,15 @@ class HOSVD:
             # this actually doesn't produce good results
             # and is not recommended
             rank = min_ncomp(s, (u.shape[0],vh.shape[1])) + 1
+            #print('rank guess 1:', rank)
             rank = max(min_ncomps, rank)
+            #print('rank guess 2:', rank)
             if max_ncomps is not None:
                 rank = min(max_ncomps, rank)
+                #print('rank guess 3:', rank)
+
             rank = rank if r[i] is None else r[i]
+            #print('rank guess 4:', rank)
             u = u[:,:rank]
             Ulist.append(u)
             S = np.tensordot(S,u.T,axes=(0,1))
@@ -438,7 +445,8 @@ class Windowed_tHOSVD():
             patch = data[sq]
             L = len(patch)
             w_sh = np.shape(patch)
-            ranks = None,w_sh[1]//2,w_sh[2]//2 # fixed for testing
+            ranks = w_sh[0]//2,w_sh[1]//2,w_sh[2]//2 # fixed for testing
+            #print(ranks)
 
             patch_c = np.zeros(w_sh[1:])
 
@@ -471,7 +479,7 @@ class Windowed_tHOSVD():
                       disable=not self.verbose):
 
             L = p.w_shape[0]
-            t_crossfade = tanh_step(np.arange(L), L, p.toverlap).astype(_dtype_)
+            t_crossfade = tanh_step(np.arange(L), L, p.toverlap, p.toverlap/2).astype(_dtype_)
             t_crossfade = t_crossfade[:, None, None]
 
             psize = np.max(p.w_shape[1:])
