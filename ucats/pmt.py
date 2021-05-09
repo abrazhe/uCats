@@ -58,6 +58,7 @@ def estimate_gain_and_offset(frames,
                              with_plot=False,
                              save_to=None,
                              return_type='mean',
+                             phigh=95,
                              verbose=False):
     """
     Estimage gain and offset parameters used by the imaging system
@@ -78,7 +79,13 @@ def estimate_gain_and_offset(frames,
     pxr = np.array([
         _simple_stats(extract_random_column(frames, patch_width)) for i in range(npatches)
     ])
-    cut = np.percentile(pxr[:, 0], 95)
+
+    x_uniq = np.unique(pxr[:,0])
+    cut_uniq = x_uniq[min(100, len(x_uniq)-1)]
+    cut_perc = np.percentile(pxr[:, 0], phigh)
+
+    cut = max(cut_uniq, cut_perc)
+
     pxr = pxr[pxr[:, 0] < cut]
     vm, vv = pxr.T
 
@@ -153,6 +160,11 @@ def estimate_gain_and_offset(frames,
         if save_to is not None:
             f.savefig(save_to)
     return results[return_type]
+
+def estimate_clip_level(frames, max_use_frames=5000):
+    gain, offset = estimate_gain_and_offset(frames, phigh=99, ntries=300)
+    u_raw = np.unique(frames[:min(len(frames),max_use_frames)])
+    return min(u_raw[u_raw > offset])
 
 
 def convert_from_varstab(df, b):
