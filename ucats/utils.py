@@ -184,12 +184,15 @@ def find_bias(y, th=3, ns=None):
 
 @jit
 def find_bias_frames(frames, th, ns):
-    signals = ah.ravel_frames(frames).T
+    #signals = ah.ravel_frames(frames).T
+    signals = np.reshape(frames, (len(frames),-1)).T
     nsr = np.ravel(ns)
     #print(nsr.shape, signals.shape)
     biases = np.zeros(nsr.shape)
     for j in range(len(biases)):
-        biases[j] = find_bias(signals[j], th, nsr[j])
+        y = signals[j]
+        biases[j] = np.median(y[np.abs(y - np.median(y)) <= th * nsr[j]])
+        #biases[j] = find_bias(signals[j], th, nsr[j])
     #biases = np.array([find_bias(v,th,ns_) for  v,ns_ in zip(signals, nsr)])
     return biases.reshape(frames[0].shape)
 
@@ -487,3 +490,11 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
     lims = 2 * mx_shifts
     sh = data.shape[1:]
     return data[:, lims[1]:sh[0] - lims[1], lims[0]:sh[1] - lims[0]]
+
+def bin_frames(frames, tbin=1, sbin=1):
+    from skimage import transform as sktransform
+    if (tbin > 1) or (sbin > 1):
+        frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
+    frames[-1] = frames[-2] # avoid dark last frame
+    # convert from means to sums
+    return frames*tbin*sbin
