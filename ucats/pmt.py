@@ -164,7 +164,7 @@ def estimate_gain_and_offset(frames,
 def estimate_clip_level(frames, max_use_frames=5000):
     gain, offset = estimate_gain_and_offset(frames, phigh=99, ntries=300)
     u_raw = np.unique(frames[:min(len(frames),max_use_frames)])
-    return min(u_raw[u_raw > offset])
+    return np.min(u_raw[u_raw > offset])
 
 
 def convert_from_varstab(df, b):
