@@ -94,6 +94,8 @@ def modalsvd(k,X):
 
 
 class HOSVD:
+    def __init__(self):
+        self.collapsed_ = False
     def fit_transform(self, X, r=None,min_ncomps=1,max_ncomps=None):
         Ulist = []
         S = X
@@ -127,11 +129,31 @@ class HOSVD:
     def inverse_transform(self, S=None, Ulist=None):
         S = self.S_ if S is None else S
         Ulist = self.Ulist_ if Ulist is None else Ulist
-        Xrec = S
-        out_shape = tuple(u.shape[0] for u in Ulist)
-        for u in Ulist:
-            Xrec = np.tensordot(Xrec, u, (0,1))
+        if not self.collapsed_:
+            Xrec = S
+            for u in Ulist:
+                Xrec = np.tensordot(Xrec, u, (0,1))
+        else:
+            Xrec = Ulist[-1]
+            for u in Ulist[-2::-1]:
+                Xrec = np.tensordot(u, Xrec, (1,-3))
         return Xrec
+
+    def collapse_2last_dimensions(self, S=None, Ulist=None):
+        S = self.S_ if S is None else S
+        Ulist = self.Ulist_ if Ulist is None else Ulist
+        if not self.collapsed_:
+            Ssh = S.shape
+            Snd = len(Ssh)
+
+            C1 = np.tensordot(S, Ulist[-2],(Snd-2,1))
+            C1 = np.tensordot(C1, Ulist[-1],(Snd-2,1))
+
+            self.collapsed_ = True
+            self.Ulist_ = list(Ulist[:-2]) + [C1]
+        return self.Ulist_
+
+
 
 
 SVD_patch = namedtuple('SVD_patch', "signals filters sigma center sq w_shape toverlap soverlap")
@@ -268,13 +290,16 @@ class Windowed_tSVD():
         squares = make_grid(np.shape(frames),
                             (self.patch_tsize, self.patch_ssize, self.patch_ssize),
                             (self.toverlap, self.soverlap, self.soverlap))
-        if self.t_amf > 0:
 
+        tsmoother = lambda v:v
+        ssmoother = lambda v:v
+
+        if self.t_amf > 0:
             tsmoother = lambda v: adaptive_filter_1d(
                 v, th=3, smooth=self.t_amf, keep_clusters=False)
         if self.s_amf > 0:
             ssmoother = lambda v: adaptive_filter_2d(v.reshape(self.patch_ssize, -1),
-                                                     smooth=self.t_amf,
+                                                     smooth=self.s_amf,
                                                      keep_clusters=False).reshape(v.shape)
 
         for sq in tqdm(squares, desc='superpixel truncSVD in patches', disable=not self.verbose):
@@ -299,7 +324,6 @@ class Windowed_tSVD():
                 u,s,vh = superpixel_tSVD(signals,
                                          Niter=self.cluster_niterations,
                                          nclusters=self.nclusters,
-
                                          grid_shape=grid_shape)
             else:
                 u,s,vh = simple_tSVD(signals, min_ncomps=self.min_ncomps, max_ncomps=self.max_ncomps, )
@@ -341,7 +365,7 @@ class Windowed_tSVD():
                       disable=not self.verbose):
 
             L = p.w_shape[0]
-            t_crossfade = tanh_step(np.arange(L), L, p.toverlap).astype(_dtype_)
+            t_crossfade = tanh_step(np.arange(L), L, p.toverlap, p.toverlap/2).astype(_dtype_)
             t_crossfade = t_crossfade[:, None, None]
 
             psize = np.max(p.w_shape[1:])
@@ -387,10 +411,11 @@ class Windowed_tHOSVD():
                  toverlap:'temporal overlap between patches'=100,
                  min_ncomps:'minimal number of SVD components to use'=1,
                  max_ncomps:'maximal number of SVD components'=None,
-                 center_data:'subtract mean before SVD'=True,
+                 ranks: 'ranks to use for HOSVD'=None,
+                 center_data:'subtract mean before desomposition'=True,
                  tfilter:'window of adaptive median filter for temporal components'=3,
                  sfilter:'window of adaptive median filter for spatial components'=3,
-                 compress_core_tensor_percentile=0,
+                 Sth_percentile=0,
                  verbose=False):
 
         self.patch_ssize = patch_ssize
@@ -406,10 +431,13 @@ class Windowed_tHOSVD():
 
         self.t_amf = tfilter
         self.s_amf = sfilter
+        self.use_collapsed_hosvd = False
 
         self.patches_ = None
         self.verbose = verbose
-        self.compress_core_tensor_p = compress_core_tensor_percentile
+        self.Sth_percentile = Sth_percentile
+
+        self.ranks = ranks
 
 
         self.fit_transform_ansc = Anscombe.wrap_input(self.fit_transform)
@@ -428,24 +456,19 @@ class Windowed_tHOSVD():
         squares = make_grid(np.shape(frames),
                             (self.patch_tsize, self.patch_ssize, self.patch_ssize),
                             (self.toverlap, self.soverlap, self.soverlap))
-        if self.t_amf > 0:
-            tsmoother = lambda v: adaptive_filter_1d(
-                v, th=3, smooth=self.t_amf, keep_clusters=False)
-        else:
-            tsmoother = lambda v: v
 
-        if self.s_amf > 0:
-            ssmoother = lambda v: adaptive_filter_1d(
-                v, th=3, smooth=self.s_amf, keep_clusters=False)
-        else:
-            ssmoother = lambda v:v
 
         for sq in tqdm(squares, desc='tHOSVD in patches', disable=not self.verbose):
 
             patch = data[sq]
             L = len(patch)
             w_sh = np.shape(patch)
-            ranks = w_sh[0]//2,w_sh[1]//2,w_sh[2]//2 # fixed for testing
+            #ranks = w_sh[0]//2,w_sh[1]//2,w_sh[2]//2 # fixed for testing
+            ranks = None
+            if self.ranks is None:
+                ranks = (None,w_sh[1]//2,w_sh[2]//2) # fixed for testing
+            else:
+                ranks = self.ranks
             #print(ranks)
 
             patch_c = np.zeros(w_sh[1:])
@@ -457,10 +480,6 @@ class Windowed_tHOSVD():
             hosvd = HOSVD()
             S,Ulist = hosvd.fit_transform(patch, ranks, self.min_ncomps, self.max_ncomps)
 
-            if (self.t_amf > 0) or (self.s_amf > 0):
-                for k,fn in enumerate((tsmoother, ssmoother, ssmoother)):
-                    Ulist[k] = np.array([fn(v) for v in Ulist[k].T]).T
-            hosvd.Ulist_ = Ulist
             p = HOSVD_patch(hosvd, patch_c, sq, w_sh, self.toverlap, self.soverlap)
             acc.append(p)
         self.patches_ = acc
@@ -473,6 +492,16 @@ class Windowed_tHOSVD():
 
         out_data = np.zeros(self.data_shape_, dtype=_dtype_)
         counts = np.zeros(self.data_shape_, _dtype_)    # candidate for crossfade
+
+        tsmoother = lambda v: v
+        ssmoother = lambda v: v
+
+        if self.t_amf > 0:
+            tsmoother = lambda v: adaptive_filter_1d(v, th=3, smooth=self.t_amf, keep_clusters=False)
+        if self.s_amf > 0:
+            ssmoother = lambda v: adaptive_filter_2d(v,
+                                                     smooth=self.s_amf,
+                                                     keep_clusters=False)
 
         for p in tqdm(patches,
                       desc='tHOSVD inverse transform',
@@ -492,10 +521,27 @@ class Windowed_tHOSVD():
 
             counts[p.sq] += t_crossfade * w_crossfade
             S, Ulist = p.hosvd.S_, p.hosvd.Ulist_
-            if self.compress_core_tensor_p > 0:
-                thresh = np.percentile(np.abs(S), self.compress_core_tensor_p)
+
+            if self.Sth_percentile > 0:
+                thresh = np.percentile(np.abs(S), self.Sth_percentile)
                 S = np.where(np.abs(S)>=thresh, S, 0)
-            rec = p.hosvd.inverse_transform(S, Ulist    )
+
+            p.hosvd.S_ = S
+
+            if self.t_amf > 0:
+                # I rely here that first dimension is time, and HOSVD is 3D
+                # this is not generalized to 4D imaging or bags of patches yet
+                Utmp = np.array([tsmoother(v) for v in Ulist[0].T]).T
+                p.hosvd.Ulist_[0] = Utmp
+
+            if self.s_amf > 0:
+                Usp = p.hosvd.collapse_2last_dimensions()[-1]
+                Usp = np.array([ssmoother(m) for m in Usp])
+                p.hosvd.Ulist_[-1] = Usp
+                #print([u.shape for u in p.hosvd.Ulist_])
+
+            rec = p.hosvd.inverse_transform()
+            #rec = p.hosvd.inverse_transform(S, Ulist)
             rec += p.center
             out_data[p.sq] += rec * t_crossfade * w_crossfade
 

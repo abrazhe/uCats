@@ -20,7 +20,14 @@ from .patch_svd_double_stage import NL_Windowed_tSVD
 from .patch_svd_double_stage import Multiscale_NL_Windowed_tSVD
 
 
+from . import W4D_HOSVD
 
+from .W4D_HOSVD import NL_Windowed_HOSVD
+from .W4D_HOSVD import Multiscale_NL_Windowed_HOSVD
+
+
+
+# drop this, don't use ->
 def _patch_denoise_percentiles(data,
                                stride=2,
                                nhood=3,
