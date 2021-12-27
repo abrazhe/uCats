@@ -74,7 +74,7 @@ class NL_Windowed_HOSVD():
 
     def denoise(self, frames):
         coll = self.fit_transform(frames)
-        return self.inverse_transform(coll)
+        return self.inverse_transform()
 
 
     def fit_transform(self, frames,):

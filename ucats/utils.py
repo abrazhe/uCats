@@ -49,8 +49,11 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
     return np.clip(m, *px)
 
 
-def median_std_labeler(y, th=1):
-    sigma = std_median(y)
+def median_std_labeler(y, th=1, ns=None):
+    if ns is None:
+        sigma = std_median(y)
+    else:
+        sigma = ns
     ys = smoothed_medianf(y, 0.5, 3)
     structures, nlab = ndi.label(y > np.median(y))
     peaks = ys >= th * sigma
@@ -180,6 +183,43 @@ def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     return np.median(y[np.abs(y - np.median(y)) <= th * ns])
+
+
+
+def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, with_plot=False):
+    "alternative mode estimator"
+    #kde = estimate_kde(data, bw_method=kde_factor)
+
+    vmin,vmax = np.percentile(data, (1,top_cut))
+    counts,edges = np.histogram(data, bins, density=True, range=(vmin,vmax))
+    bins_smooth = l2spline(counts, smooth_factor)
+    mode  = edges[np.argmax(bins_smooth)]
+
+    if with_plot:
+        f, ax = plt.subplots(1,1)
+        _ = ax.hist(data, bins, range=(vmin,vmax),  density=True, color='lightblue')
+        ax.plot(edges[:-1],counts, color='gray')
+        ax.plot(edges[:-1], bins_smooth, lw=3)
+        ax.axvline(mode, color='tomato')
+    return mode
+
+def find_bias_mode(y, th=3, *args, **kwargs):
+    ns = estimate_noise_sigma(y)
+    m = np.median(y)
+    cond = y < m + th*ns # asymmetric
+    return estimate_mode(y[cond], *args, **kwargs)
+
+def find_rolling_bias(y, th=3, ns=None, window=None):
+
+    if window is None:
+        window = len(y)//10
+
+    if ns is None:
+        ns = rolling_sd_pd(y)
+
+    ys = ndi.median_filter(y, window // 2)
+    yx = np.where(np.abs(y-ys) <= th*ns, y, ys)
+    return ndi.median_filter(yx, window)
 
 
 @jit

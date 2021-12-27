@@ -108,9 +108,9 @@ def windowed_envelope(y, wsize=50, woverlap=25):
         out[sl][:,1] = np.maximum(out[sl][:,1], env[:,1])
     return out
 
-def windowed_runmin(y, wsize=50, woverlap=25):
+def windowed_runmin(y, wsize=50, woverlap=None):
     L = len(y)
-    if woverlap >= wsize:
+    if woverlap is None or woverlap >= wsize:
         woverlap = wsize // 2
     sqs = make_grid((L, ), wsize, woverlap)
     out = (np.max(y) + 0.1) * np.ones(L, _dtype_)
@@ -119,6 +119,11 @@ def windowed_runmin(y, wsize=50, woverlap=25):
         bx = top_running_min(y[sl])
         out[sl] = np.minimum(out[sl], bx)
     return out
+
+# def two_way_percentile(y, wsize=50, percentile=25):
+#     forward = ndi.percentile_filter(y, percentile, wsize)
+#     backward = ndi.percentile_filter(y[::-1],percentile, wsize)[::-1]
+#     return np.maximum(forward, backward)
 
 
 from scipy.stats import skew
@@ -145,6 +150,20 @@ def iterated_symm_runmin(v, niters=10, w=350,
     if post_smooth > 0:
         out = l1spline(out, post_smooth)
     return out
+
+def iterated_flat_runmin(y, wb=200, wt=50, niter=1):
+    ynext = y
+    bb = np.zeros_like(y) + np.min(y)
+    for i in range(niter):
+        t = -windowed_runmin(-ynext,wt)
+        tu = windowed_runmin(t, wt)
+        yflat = ynext - tu
+
+        b = -windowed_runmin(-windowed_runmin(yflat,wb),wb)
+        t2 = windowed_runmin(-windowed_runmin(-yflat,wt),wt)
+
+        ynext = tu + np.clip(yflat, b, t2)
+    return -windowed_runmin(-windowed_runmin(ynext,wb),wb)
 
 
 def select_most_stable_branch(variants, window=50, woverlap=None):

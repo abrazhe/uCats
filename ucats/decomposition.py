@@ -106,7 +106,7 @@ class HOSVD:
 
         for i,ni in enumerate(X.shape):
             u,s,vh = modalsvd(i,X)
-            # this actually doesn't produce good results
+            # the following actually doesn't produce good results
             # and is not recommended
             rank = min_ncomp(s, (u.shape[0],vh.shape[1])) + 1
             #print('rank guess 1:', rank)
@@ -144,10 +144,10 @@ class HOSVD:
         Ulist = self.Ulist_ if Ulist is None else Ulist
         if not self.collapsed_:
             Ssh = S.shape
-            Snd = len(Ssh)
+            Sndim = len(Ssh)
 
-            C1 = np.tensordot(S, Ulist[-2],(Snd-2,1))
-            C1 = np.tensordot(C1, Ulist[-1],(Snd-2,1))
+            C1 = np.tensordot(S, Ulist[-2],(Sndim-2,1))
+            C1 = np.tensordot(C1, Ulist[-1],(Sndim-2,1))
 
             self.collapsed_ = True
             self.Ulist_ = list(Ulist[:-2]) + [C1]
@@ -175,6 +175,7 @@ def superpixel_tSVD(signals,
                     grid_shape=None,
                     min_ncomps = 1,
                     max_ncomps = 100,
+                    do_cleanup_label_maps=False,
                     return_components=True):
     approx = []
     sh = signals.shape
@@ -199,7 +200,8 @@ def superpixel_tSVD(signals,
         if nclusters >1 :
             label_signals = signals if k == 0 else np.mean(approx,0)#/i
             labels = clusterer.fit_predict(label_signals)
-            labels = cleanup_cluster_map(labels.reshape((len(labels),1)), min_neighbors=2, niter=10).ravel()
+            if do_cleanup_label_maps:
+                labels = cleanup_cluster_map(labels.reshape((len(labels),1)), min_neighbors=2, niter=10).ravel()
         else:
             labels = np.ones(signals.shape,dtype=np.int)
         #alpha = k/Niter
@@ -230,7 +232,7 @@ def superpixel_tSVD(signals,
         return U,S,Vh
     else:
         kstart = 1 if Niter > 1 else 0
-        approx = np.mean(approx[kstart:])
+        approx = np.mean(approx[kstart:],0)
         return approx
 
 
@@ -272,7 +274,7 @@ class Windowed_tSVD():
         self.use_connectivity = use_connectivity
         self.cluster_niterations = cluster_niterations
 
-        self.do_pruning = do_pruning,
+        self.do_pruning = do_pruning
         self.fit_transform_ansc = Anscombe.wrap_input(self.fit_transform)
         self.inverse_transform_ansc = Anscombe.wrap_output(self.inverse_transform)
 
@@ -337,16 +339,17 @@ class Windowed_tSVD():
 
 
             # How to make it a convenient option?
-            svd_signals = svd_signals* s[:, None]**0.5
+            svd_signals = svd_signals * s[:, None]**0.5
             loadings = loadings * s[None,:]**0.5
             s = np.ones(len(s))
 
             if self.t_amf > 0:
                 svd_signals = np.array([tsmoother(v) for v in svd_signals])
-            W = loadings.T
 
+            W = loadings.T
             if (self.s_amf > 0) and (patch.shape[1] == self.patch_ssize**2):
                 W = np.array([ssmoother(v) for v in W])
+
             p = SVD_patch(svd_signals, W, s, patch_c, sq, w_sh, self.toverlap, self.soverlap)
             acc.append(p)
         self.patches_ = acc
@@ -392,9 +395,8 @@ class Windowed_tSVD():
                 sigma = np.diag(np.ones(len(sigma)))
 
             rec = (p.signals.T @ sigma @ p.filters).reshape(p.w_shape)
-
-
             rec += p.center.reshape(p.w_shape[1:])
+
             out_data[p.sq] += rec * t_crossfade * w_crossfade
 
         out_data /= (1e-12 + counts)
@@ -553,7 +555,7 @@ class Windowed_tHOSVD():
 def weight_components(data, components, rank=None, Npermutations=100, clip_percentile=95):
     """
     For a collection of signals (each row of input matrix is a signal),
-    try to decide if using projection to the principal or svd components should describes
+    try to decide if using projection to the principal or svd components should describe
     the original signals better than time-scrambled signals. Returns a binary vector of weights
 
     Parameters:
