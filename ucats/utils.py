@@ -43,6 +43,17 @@ def downsample_image(img):
 def upsample_image(img):
     return ndi.zoom(img, 2, mode='nearest')
 
+def rescale_at_clim(m, vmin,vmax):
+    return np.clip( (m-vmin)/(vmax-vmin), 0, 1)
+
+def rescale(data):
+    vmin = np.min(data)
+    vmax = np.max(data)
+
+    if vmax == vmin:
+        return data*0
+    else:
+        return (data-vmin)/(vmax-vmin)
 
 def clip_outliers(m, plow=0.5, phigh=99.5):
     px = np.percentile(m, (plow, phigh))

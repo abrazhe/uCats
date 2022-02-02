@@ -83,7 +83,9 @@ def simple_pipeline_(y,
                      labeler_kw=None,
                      smoothed_rec=True,
                      noise_sigma=None,
-                     correct_bias=True):
+                     correct_bias=True,
+                     rec_kw = None,
+                     ):
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
@@ -94,12 +96,6 @@ def simple_pipeline_(y,
 
     if correct_bias:
         bias = find_bias(y, th=1.5, ns=ns)
-        #low = y < np.median(y) + 1.5*ns
-        #if not any(low):
-        #    low = np.ones(len(y),np.bool)
-        #    bias = np.median(y[low])
-        #    if bias > 0:
-        #        y = y-bias
         y = y - bias
     vn = y / ns
     #labels = simple_label_lj(vn, tau=tau_label_,with_plots=False)
@@ -108,8 +104,12 @@ def simple_pipeline_(y,
     labels = labeler(vn, **labeler_kw)
     if not any(labels):
         return np.zeros_like(y)
+    if rec_kw is None:
+        rec_kw = {}
     return sp_rec_with_labels(vn, labels, with_plots=False,
-                              return_smoothed=smoothed_rec) * ns
+                              return_smoothed=smoothed_rec,
+                              **rec_kw,
+                              ) * ns
 
 
 def sp_rec_with_labels(vec,

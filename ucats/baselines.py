@@ -304,11 +304,13 @@ def percentile_baseline(y,
 
     b = smoother(ndi.percentile_filter(ypad, plow, percentile_window), out_smooth)
     b = b[npad:L + npad]
-    if ns is None:
-        ns = rolling_sd_pd(y)
+    #if ns is None:
+    #    ns = rolling_sd_pd(y)
     d = y - b
+    if ns is None:
+        ns = mad_std(y-b)
     if not np.any(ns):
-        ns = np.std(y)
+        ns = np.std(d)
     bg_points = d[np.abs(d) <= th * ns]
     if len(bg_points) > 10:
         b = b + np.median(bg_points)    # correct scalar shift
@@ -369,7 +371,7 @@ def first_pc_baseline(frames,
     return f0
 
 
-def multi_scale_simple_baseline(y,
+def multi_scale_percentile_baseline(y,
                                 plow=50,
                                 th=3,
                                 smooth_levels=(10, 20, 40, 80, 160),
@@ -398,7 +400,7 @@ def baseline_als_spl(y,
                      smoother=l2spline,
                      asymm_ratio=0.9,
                      correct_skew=False):
-    """Implements an Asymmetric Least Squares Smoothing
+    """Asymmetric Least Squares Smoothing
     baseline correction algorithm (P. Eilers, H. Boelens 2005),
     via DCT-based spline smoothing
     """
