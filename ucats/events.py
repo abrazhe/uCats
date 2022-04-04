@@ -41,13 +41,17 @@ class EventCollection:
         self.min_duration = min_duration
         self.labels, self.objs = segment_events(frames, threshold)
 
+
+
         self.coll = [
-            dict(duration=self.event_duration(k),
+            dict(start=self.objs[k][0].start,
+                 duration=self.event_duration(k),
+                 peak_area_frame = self.event_peak_area_time(k),
+                 peak_area = self.event_peak_area(k),
                  area=self.event_area(k),
                  volume=self.event_volume(k),
                  peak=self.data_value(k, frames),
                  avg=self.data_value(k, frames, np.mean),
-                 start=self.objs[k][0].start,
                  idx=k) for k in range(len(self.objs))
         ]
 
@@ -84,8 +88,16 @@ class EventCollection:
     def project_event_mask(self, k):
         return np.max(self.event_volume_mask(k), axis=0)
 
+    def event_peak_area_time(self, k):
+        vm = self.event_volume_mask(k)
+        return np.argmax(np.sum(vm, axis=(1,2)))
+
     def event_area(self, k):
         return np.sum(self.project_event_mask(k).astype(int))
+
+    def event_peak_area(self, k):
+        vm = self.event_volume_mask(k)
+        return  np.max(np.sum(vm, axis=(1,2)))
 
     def event_volume(self, k):
         return np.sum(self.event_volume_mask(k))
