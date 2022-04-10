@@ -542,10 +542,32 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
     sh = data.shape[1:]
     return data[:, lims[1]:sh[0] - lims[1], lims[0]:sh[1] - lims[0]]
 
+# def bin_frames(frames, tbin=1, sbin=1):
+#     from skimage import transform as sktransform
+#     if (tbin > 1) or (sbin > 1):
+#         frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
+#     frames[-1] = frames[-2] # avoid dark last frame
+#     # convert from means to sums
+#     return frames*tbin*sbin
+
+
 def bin_frames(frames, tbin=1, sbin=1):
     from skimage import transform as sktransform
+    dtype = frames.dtype
+    offset = np.min(frames)
     if (tbin > 1) or (sbin > 1):
         frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
     frames[-1] = frames[-2] # avoid dark last frame
     # convert from means to sums
-    return frames*tbin*sbin
+    frames = np.maximum(frames - offset, 0)
+    frames = frames*tbin*sbin
+    if dtype.kind in 'iu':
+        vmin,vmax =frames[frames>0].min(),frames.max()
+        if vmax < 2**16 - 1 :
+            frames = np.round(frames).astype(np.uint16)
+        #print(vmin, vmax)
+        #if vmax-vmin+1 < 2**16-1:
+        #    frames = np.maximum(frames - vmin + 1, 0)#.astype(np.uint16)
+        else:
+            frames = frames.astype(_dtype_)
+    return frames

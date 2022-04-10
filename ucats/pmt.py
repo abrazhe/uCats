@@ -104,10 +104,14 @@ def estimate_gain_and_offset(frames,
         offsets[i] = offset
 
     regressorg = linear_model.RANSACRegressor()
-    regressorg.fit(vm[:, None], vv)
-    gainx = regressorg.estimator_.coef_
-    interceptx = regressorg.estimator_.intercept_
-    offsetx = -interceptx / gainx
+    try:
+        regressorg.fit(vm[:, None], vv)
+        gainx = regressorg.estimator_.coef_
+        interceptx = regressorg.estimator_.intercept_
+        offsetx = -interceptx / gainx
+    except Exception as exc:
+        gainx = -1
+        offsetx = -1
     results = {
         'min': (np.amin(gains), np.amin(offsets)),
         'mean': (np.mean(gains), np.mean(offsets)),
