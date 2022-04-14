@@ -238,6 +238,24 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         self.denoise_ansc = Anscombe.wrap(self.denoise)
         self.do_shift_expansion_=False
 
+    def copy(self):
+        state_vars = ['Nhood',
+                      'n_clusters',
+                      'temporal_mode',
+                      'tv_samples_per_cluster',
+                      'tv_sigma',
+                      'tv_niters',
+                      'clustering_algorithm',
+                      'do_signals',
+                      'do_spatial',
+                      'do_shift_expansion_',]
+
+        newobj = self.__class__()
+        newobj.__dict__.update(**{key:self.__dict__[key] for key in state_vars})
+        if hasattr(self, 'full_data_shape_'):
+            newobj.full_data_shape_ = self.full_data_shape_
+        return newobj
+
     def denoise(self, frames):
         coll = self.fit_transform(frames)
         return self.inverse_transform(coll)
