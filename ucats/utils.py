@@ -483,8 +483,8 @@ def adaptive_filter_2d(img,
     imgf = smoother(img, smooth)
     details = img - imgf
     sd = mad_std(img)
-    outliers = np.abs(
-        details) > th * sd    # in real adaptive filter the s.d. must be rolling!
+    # in real adaptive filter the s.d. must be rolling!
+    outliers = np.abs(details) > (th * sd )
     if keep_clusters:
         clusters = threshold_object_size(outliers, min_cluster_size)
         outliers = ~clusters if reverse else outliers ^ clusters
@@ -552,22 +552,21 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
 
 
 def bin_frames(frames, tbin=1, sbin=1):
-    from skimage import transform as sktransform
+    #from skimage import transform as sktransform
+    from skimage import measure as skmeasure
     dtype = frames.dtype
-    offset = np.min(frames)
+    tpad = len(frames)%tbin
     if (tbin > 1) or (sbin > 1):
-        frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
-    frames[-1] = frames[-2] # avoid dark last frame
-    # convert from means to sums
-    frames = np.maximum(frames - offset, 0)
-    frames = frames*tbin*sbin
+        #frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
+        frames = skmeasure.block_reduce(frames, (tbin, sbin, sbin), func=np.sum)
+    if tpad > 0:
+        frames[-tpad:] = frames[-tpad-1] # avoid dark last frames if padding was required
     if dtype.kind in 'iu':
-        vmin,vmax =frames[frames>0].min(),frames.max()
-        if vmax < 2**16 - 1 :
-            frames = np.round(frames).astype(np.uint16)
-        #print(vmin, vmax)
-        #if vmax-vmin+1 < 2**16-1:
-        #    frames = np.maximum(frames - vmin + 1, 0)#.astype(np.uint16)
-        else:
-            frames = frames.astype(_dtype_)
+        vmin = np.min(frames)
+        frames = frames - vmin
+        vmax = frames.max()
+        if vmax < 2**16:
+            frames = frames.astype(np.uint16)
+        #else:
+        #frames = frames.astype(_dtype_)
     return frames
