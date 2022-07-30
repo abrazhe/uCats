@@ -401,6 +401,12 @@ def rolling_sd_scipy_nd(arr, hw=None, correct_factor=1., smooth_output=True):
         out = l2spline(out, s=hw)
     return out
 
+from skimage.util import view_as_windows
+def rolling_sd_skimage(img, window):
+    imgp = np.pad(img, pad_width=((0,window), (0,window)), mode='edge')
+    imgpx = view_as_windows(imgp, window)
+    sh=img.shape
+    return np.std(imgpx, axis=(-1,-2))[:sh[0],:sh[1]]
 
 def smoothed_medianf(v, smooth=10, wmedian=10):
     "Robust smoothing by first applying median filter and then applying L2-spline filter"
@@ -482,8 +488,10 @@ def adaptive_filter_2d(img,
                        min_cluster_size=5):
     imgf = smoother(img, smooth)
     details = img - imgf
-    sd = mad_std(img)
+    #sd = mad_std(img)
+    sd = mad_std(details)
     # in real adaptive filter the s.d. must be rolling!
+    #sd = rolling_sd_skimage(img, int(smooth))
     outliers = np.abs(details) > (th * sd )
     if keep_clusters:
         clusters = threshold_object_size(outliers, min_cluster_size)
@@ -551,16 +559,22 @@ def crop_by_max_shift(data, shifts, mx_shifts=None):
 #     return frames*tbin*sbin
 
 
-def bin_frames(frames, tbin=1, sbin=1):
+def bin_frames(frames, tbin=1, sbin=1, trim_margins=True):
     #from skimage import transform as sktransform
     from skimage import measure as skmeasure
     dtype = frames.dtype
     tpad = len(frames)%tbin
+    L = len(frames)
+
     if (tbin > 1) or (sbin > 1):
         #frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
-        frames = skmeasure.block_reduce(frames, (tbin, sbin, sbin), func=np.sum)
-    if tpad > 0:
-        frames[-tpad:] = frames[-tpad-1] # avoid dark last frames if padding was required
+        cval = np.min(frames[-min(tbin,L):])
+        frames = skmeasure.block_reduce(frames, (tbin, sbin, sbin), cval = cval, func=np.sum)
+    if tpad > 0 and trim_margins:
+        #frames = frames[:-tpad]
+        #frames[-tpad:] = frames[-tpad-1] # avoid dark last frames if padding was required
+        frames = frames[:-1]
+        pass
     if dtype.kind in 'iu':
         vmin = np.min(frames)
         frames = frames - vmin

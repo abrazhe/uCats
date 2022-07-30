@@ -368,7 +368,10 @@ class Windowed_tSVD():
                       disable=not self.verbose):
 
             L = p.w_shape[0]
-            t_crossfade = tanh_step(np.arange(L), L, p.toverlap, p.toverlap/2).astype(_dtype_)
+            if self.patch_tsize >= L:
+                t_crossfade = np.ones(L, _dtype_)
+            else:
+                t_crossfade = tanh_step(np.arange(L), L, p.toverlap, p.toverlap/2).astype(_dtype_)
             t_crossfade = t_crossfade[:, None, None]
 
             psize = np.max(p.w_shape[1:])
