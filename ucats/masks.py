@@ -49,16 +49,33 @@ def select_overlapping(mask, seeds, neg=False):
             out[o][overlap] = True
     return out
 
-
-def largest_region(mask):
-    labels, nlab = ndi.label(mask)
-    if nlab > 0:
-        objs = ndi.find_objects(labels)
-        sizes = [np.sum(labels[o]==k+1) for k,o in enumerate(objs)]
-        k = np.argmax(sizes)
-        return labels==k+1
+def get_object_sizes(mask, is_labels=False):
+    if not is_labels:
+        labels, nlab = ndi.label(mask)
     else:
-        return mask
+        labels = mask
+    objs = ndi.find_objects(labels)
+    out = [np.sum(labels[o]==k+1) for k,o in enumerate(objs)]
+    return out
+
+def n_largest_regions(mask,  n=1):
+    "get  N largest contiguous region from a binary mask"
+    labels, _ = ndi.label(mask)
+    sizes = get_object_sizes(labels, is_labels=True)
+    ksort = np.argsort(sizes)[::-1]
+    return np.sum([labels == k+1 for k in ksort[:n]],0).astype(bool)
+
+largest_region = n_largest_regions
+
+# def largest_region(mask):
+#     labels, nlab = ndi.label(mask)
+#     if nlab > 0:
+#         objs = ndi.find_objects(labels)
+#         sizes = [np.sum(labels[o]==k+1) for k,o in enumerate(objs)]
+#         k = np.argmax(sizes)
+#         return labels==k+1
+#     else:
+#         return mask
 
 def threshold_object_size(mask, min_size):
     labels, nlab = ndi.label(mask)
