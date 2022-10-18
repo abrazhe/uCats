@@ -373,6 +373,8 @@ class Windowed_tSVD():
 
             if (self.patch_tsize <= 0) or (self.patch_tsize >= L):
                 patch_tsize = L
+            else:
+                patch_tsize = self.patch_tsize
             
             if patch_tsize >= L:
                 t_crossfade = np.ones(L, _dtype_)
