@@ -239,7 +239,7 @@ def superpixel_tSVD(signals,
 class Windowed_tSVD():
     def __init__(self,
                  patch_ssize:'spatial size of the patch'=8,
-                 patch_tsize:'temporal size of the patch'=600,
+                 patch_tsize:'temporal size of the patch'=-1,
                  soverlap:'spatial overlap between patches'=4,
                  toverlap:'temporal overlap between patches'=100,
                  min_ncomps:'minimal number of SVD components to use'=1,
@@ -283,14 +283,16 @@ class Windowed_tSVD():
         acc = []
         L = len(frames)
 
-
-        self.patch_tsize = min(L, self.patch_tsize)
-
-        if self.toverlap >= self.patch_tsize:
-            self.toverlap = self.patch_tsize // 4
+        if (self.patch_tsize <=0) or (self.patch_tsize > L):
+            patch_tsize = L
+        else:
+            patch_tsize = self.patch_tsize
+        
+        if self.toverlap >= patch_tsize:
+            self.toverlap = patch_tsize // 4
 
         squares = make_grid(np.shape(frames),
-                            (self.patch_tsize, self.patch_ssize, self.patch_ssize),
+                            (patch_tsize, self.patch_ssize, self.patch_ssize),
                             (self.toverlap, self.soverlap, self.soverlap))
 
         tsmoother = lambda v:v
@@ -368,7 +370,11 @@ class Windowed_tSVD():
                       disable=not self.verbose):
 
             L = p.w_shape[0]
-            if self.patch_tsize >= L:
+
+            if (self.patch_tsize <= 0) or (self.patch_tsize >= L):
+                patch_tsize = L
+            
+            if patch_tsize >= L:
                 t_crossfade = np.ones(L, _dtype_)
             else:
                 t_crossfade = tanh_step(np.arange(L), L, p.toverlap, p.toverlap/2).astype(_dtype_)
@@ -411,7 +417,7 @@ class Windowed_tSVD():
 class Windowed_tHOSVD():
     def __init__(self,
                  patch_ssize:'spatial size of the patch'=8,
-                 patch_tsize:'temporal size of the patch'=600,
+                 patch_tsize:'temporal size of the patch'=-1,
                  soverlap:'spatial overlap between patches'=4,
                  toverlap:'temporal overlap between patches'=100,
                  min_ncomps:'minimal number of SVD components to use'=1,
@@ -453,13 +459,17 @@ class Windowed_tHOSVD():
         acc = []
         L = len(frames)
 
-        self.patch_tsize = min(L, self.patch_tsize)
+        if (self.patch_tsize <=0) or (self.patch_tsize > L) :
+            patch_tsize = L
+        else:
+            patch_tsize = self.patch_tsize
+        
 
-        if self.toverlap >= self.patch_tsize:
-            self.toverlap = self.patch_tsize // 4
+        if self.toverlap >= patch_tsize:
+            self.toverlap = patch_tsize // 4
 
         squares = make_grid(np.shape(frames),
-                            (self.patch_tsize, self.patch_ssize, self.patch_ssize),
+                            (patch_tsize, self.patch_ssize, self.patch_ssize),
                             (self.toverlap, self.soverlap, self.soverlap))
 
 

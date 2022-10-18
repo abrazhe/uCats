@@ -390,7 +390,8 @@ class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
             update = self.inverse_transform(coll)
             if scale > 1:
                 #update = sktransform.rescale(update, (1,scale,scale))
-                update = sktransform.rescale(update, (1,scale,scale), multichannel=False)
+                #update = sktransform.rescale(update, (1,scale,scale), multichannel=False)
+                update = sktransform.rescale(update, (1,scale,scale), channel_axis=None)
             nur,nuc = update.shape[1:]
             nrx = min(nr,nur)
             ncx = min(nc, nuc)
