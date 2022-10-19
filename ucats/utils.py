@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 from scipy import ndimage as ndi
+from scipy import signal
 
 from matplotlib import pyplot as plt
 
@@ -534,6 +535,67 @@ def process_signals_parallel(collection, pipeline, pipeline_kw=None, njobs=4):
 #     sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
 #     return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
 
+
+def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=10, wlen=None, with_plot=False, ax=None):
+
+    ys = ndi.gaussian_filter1d(y, smooth) if smooth > 0 else y
+
+    peaks, props = signal.find_peaks(ys, distance=min_distance)
+    if npeaks is None:
+        npeaks = len(peaks)
+    #npeaks = min(len(peaks), npeaks)
+
+
+    peaks = sorted(peaks, reverse=True, key=lambda p: ys[p])[:npeaks]
+    peaks = np.array(sorted(peaks))
+
+
+    proms = signal.peak_prominences(ys, peaks, wlen=wlen)
+    hwidths = signal.peak_widths(ys, peaks, prominence_data=proms)
+    lwidths = signal.peak_widths(ys,  peaks, rel_height=1-rel_onset, prominence_data=proms)
+
+    res = []
+    for i in range(npeaks):
+        if i < len(peaks):
+            row = dict(prominence = proms[0][i],
+                       peak_amp = ys[peaks[i]],
+                       fwhm = hwidths[0][i]*dt,
+                       onset = lwidths[2][i]*dt,                   
+                       time_to_peak = peaks[i]*dt,
+                       time_to_half = hwidths[2][i]*dt,
+                       finish = lwidths[3][i]*dt,
+                       onset_amp =rel_onset,
+                       )
+        else:
+            row = dict(prominence = np.nan,
+                       peak_amp = np.nan,
+                       fwhm = np.nan,
+                       onset = np.nan,                   
+                       time_to_peak = np.nan,
+                       time_to_half = np.nan,
+                       finish = np.nan,
+                       onset_amp =np.nan)
+        res.append(row)
+    
+    if with_plot:
+
+        if ax is None:
+            fig, ax = plt.subplots(1,1, figsize=(6,3))
+            
+        
+        ax.plot(y, color='gray')
+
+        ax.plot(ys, alpha=0.75)
+        #plot(yss, alpha=0.5)
+        ax.plot(peaks[:npeaks], ys[peaks[:npeaks]], 'rv')
+        ax.vlines(peaks[:npeaks], ymin=ys[peaks[:npeaks]]-proms[0], ymax=ys[peaks[:npeaks]], color='g')
+
+        for i in range(len(peaks)):
+            ax.hlines(hwidths[1][i], xmin=hwidths[2][i],xmax=hwidths[3][i],color='g')
+            ax.axvline(lwidths[2][i], color='y', ls='--' )
+            ax.axvline(lwidths[3][i], color='y', ls=':', lw=0.5 )
+            
+    return res
 
 def max_shifts(shifts, verbose=0):
     #ms = np.max(np.abs([s.fn_((0,0)) if s.fn_ else s.field[...,0,0] for s in shifts]),axis=0)
