@@ -61,6 +61,35 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
     return np.clip(m, *px)
 
 
+def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, kind='first', with_plot=False):
+    """alternative mode estimator
+     - kind: {'first' | 'highest'}
+    """        
+    
+    vmin,vmax = np.percentile(data, (1,top_cut))
+    counts,edges = np.histogram(data, bins, density=True, range=(vmin,vmax))
+    bins_smooth = l2spline(counts, smooth_factor)
+    #mode  = edges[np.argmax(bins_smooth)]
+    
+    peak_locs, peak_props =signal.find_peaks(bins_smooth, height=np.max(bins_smooth)/2)
+
+    if kind == 'first':
+        kpeak = peak_locs[0]
+    elif kind == 'highest':
+        kpeak = peak_locs[np.argmax(peak_props['peak_hights'])]
+    else:
+        kpeak = np.argmax(bins_smooth)
+    
+    mode = edges[kpeak]
+    if with_plot:
+        f, ax = plt.subplots(1,1)
+        _ = ax.hist(data, bins, range=(vmin,vmax),  density=True, color='lightblue')
+        ax.plot(edges[:-1],counts, color='gray')
+        ax.plot(edges[:-1], bins_smooth, lw=3)
+        ax.axvline(mode, color='tomato')
+    return mode
+
+
 def median_std_labeler(y, th=1, ns=None):
     if ns is None:
         sigma = std_median(y)
@@ -195,25 +224,6 @@ def find_bias(y, th=3, ns=None):
     if ns is None:
         ns = rolling_sd_pd(y)
     return np.median(y[np.abs(y - np.median(y)) <= th * ns])
-
-
-
-def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, with_plot=False):
-    "alternative mode estimator"
-    #kde = estimate_kde(data, bw_method=kde_factor)
-
-    vmin,vmax = np.percentile(data, (1,top_cut))
-    counts,edges = np.histogram(data, bins, density=True, range=(vmin,vmax))
-    bins_smooth = l2spline(counts, smooth_factor)
-    mode  = edges[np.argmax(bins_smooth)]
-
-    if with_plot:
-        f, ax = plt.subplots(1,1)
-        _ = ax.hist(data, bins, range=(vmin,vmax),  density=True, color='lightblue')
-        ax.plot(edges[:-1],counts, color='gray')
-        ax.plot(edges[:-1], bins_smooth, lw=3)
-        ax.axvline(mode, color='tomato')
-    return mode
 
 def find_bias_mode(y, th=3, *args, **kwargs):
     ns = estimate_noise_sigma(y)
