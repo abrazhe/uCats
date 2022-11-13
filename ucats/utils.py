@@ -64,13 +64,13 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
 def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, kind='first', with_plot=False):
     """alternative mode estimator
      - kind: {'first' | 'highest'}
-    """        
-    
+    """
+
     vmin,vmax = np.percentile(data, (1,top_cut))
     counts,edges = np.histogram(data, bins, density=True, range=(vmin,vmax))
     bins_smooth = l2spline(counts, smooth_factor)
     #mode  = edges[np.argmax(bins_smooth)]
-    
+
     peak_locs, peak_props =signal.find_peaks(bins_smooth, height=np.max(bins_smooth)/2)
 
     if kind == 'first':
@@ -79,7 +79,7 @@ def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, kind='first', wit
         kpeak = peak_locs[np.argmax(peak_props['peak_hights'])]
     else:
         kpeak = np.argmax(bins_smooth)
-    
+
     mode = edges[kpeak]
     if with_plot:
         f, ax = plt.subplots(1,1)
@@ -555,22 +555,25 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
         npeaks = len(peaks)
     #npeaks = min(len(peaks), npeaks)
 
+    if len(peaks) > 0:
+        peaks = sorted(peaks, reverse=True, key=lambda p: ys[p])[:npeaks]
+        peaks = np.array(sorted(peaks))
 
-    peaks = sorted(peaks, reverse=True, key=lambda p: ys[p])[:npeaks]
-    peaks = np.array(sorted(peaks))
+        proms = signal.peak_prominences(ys, peaks, wlen=wlen)
+        hwidths = signal.peak_widths(ys, peaks, prominence_data=proms)
+        lwidths = signal.peak_widths(ys,  peaks, rel_height=1-rel_onset, prominence_data=proms)
 
+    else:
+        peaks = np.array([])
 
-    proms = signal.peak_prominences(ys, peaks, wlen=wlen)
-    hwidths = signal.peak_widths(ys, peaks, prominence_data=proms)
-    lwidths = signal.peak_widths(ys,  peaks, rel_height=1-rel_onset, prominence_data=proms)
 
     res = []
     for i in range(npeaks):
-        if i < len(peaks):
+        if i < len(peaks) and len(peaks)>0:
             row = dict(prominence = proms[0][i],
                        peak_amp = ys[peaks[i]],
                        fwhm = hwidths[0][i]*dt,
-                       onset = lwidths[2][i]*dt,                   
+                       onset = lwidths[2][i]*dt,
                        time_to_peak = peaks[i]*dt,
                        time_to_half = hwidths[2][i]*dt,
                        finish = lwidths[3][i]*dt,
@@ -580,31 +583,32 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             row = dict(prominence = np.nan,
                        peak_amp = np.nan,
                        fwhm = np.nan,
-                       onset = np.nan,                   
+                       onset = np.nan,
                        time_to_peak = np.nan,
                        time_to_half = np.nan,
                        finish = np.nan,
                        onset_amp =np.nan)
         res.append(row)
-    
+
     if with_plot:
 
         if ax is None:
             fig, ax = plt.subplots(1,1, figsize=(6,3))
-            
-        
+
+
         ax.plot(y, color='gray')
 
         ax.plot(ys, alpha=0.75)
         #plot(yss, alpha=0.5)
-        ax.plot(peaks[:npeaks], ys[peaks[:npeaks]], 'rv')
-        ax.vlines(peaks[:npeaks], ymin=ys[peaks[:npeaks]]-proms[0], ymax=ys[peaks[:npeaks]], color='g')
+        if len(peaks):
+            ax.plot(peaks[:npeaks], ys[peaks[:npeaks]], 'rv')
+            ax.vlines(peaks[:npeaks], ymin=ys[peaks[:npeaks]]-proms[0], ymax=ys[peaks[:npeaks]], color='g')
 
-        for i in range(len(peaks)):
-            ax.hlines(hwidths[1][i], xmin=hwidths[2][i],xmax=hwidths[3][i],color='g')
-            ax.axvline(lwidths[2][i], color='y', ls='--' )
-            ax.axvline(lwidths[3][i], color='y', ls=':', lw=0.5 )
-            
+            for i in range(len(peaks)):
+                ax.hlines(hwidths[1][i], xmin=hwidths[2][i],xmax=hwidths[3][i],color='g')
+                ax.axvline(lwidths[2][i], color='y', ls='--' )
+                ax.axvline(lwidths[3][i], color='y', ls=':', lw=0.5 )
+
     return res
 
 def max_shifts(shifts, verbose=0):
