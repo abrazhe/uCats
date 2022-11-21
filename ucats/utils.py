@@ -545,16 +545,21 @@ def process_signals_parallel(collection, pipeline, pipeline_kw=None, njobs=4):
 #     sdmap = np.median(abs(details - mdmap), axis=0)*1.4826
 #     return np.where(abs(details-mdmap)  >  th*sdmap, medfilt, frames)
 
+def group_locs_between_separators(locs, separators):
+    return [locs[(locs >= left) & (locs < right)] for left, right
+            in zip(separators[:-1], separators[1:])]
 
-def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=10, 
+def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=10,
                    peak_separators=None,  wlen=None, with_plot=False, ax=None):
 
     ys = ndi.gaussian_filter1d(y, smooth) if smooth > 0 else y
+    d_ys = ndi.gaussian_filter1d(ys, smooth/2 if smooth > 0 else 1., order=1)
 
     peaks, props = signal.find_peaks(ys, distance=min_distance)
+    dpeaks, dprops = signal.find_peaks(d_ys, distance=min_distance)
 
     if peak_separators is not None:
-        npeaks = len(peak_separators) + 1 
+        npeaks = len(peak_separators) + 1
 
     # Search all peaks if npeaks is None
     if npeaks is None:
@@ -565,33 +570,56 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
         return list(zip(*c))
 
     if len(peaks) > 0:
-        
+
         if peak_separators is not None:
             peak_separators_extended = [0] + list(peak_separators) + [len(y)]
+            peak_groups = group_locs_between_separators(peaks, peak_separators_extended)
+            dpeak_groups = group_locs_between_separators(dpeaks, peak_separators_extended)
 
-            peak_groups = [peaks[(peaks >= left) & (peaks < right)] for left,right 
-                           in zip(peak_separators_extended[:-1], peak_separators_extended[1:])]
             # NB: need to check (rare?) condition, where no peaks fall between the separators
-            selected_peaks,proms,hwidths,lwidths = [],[],[],[]
-            for pg in peak_groups:
+            selected_peaks,selected_dpeaks,proms,hwidths,lwidths = [],[],[],[],[]
+            for pg,dpg in zip(peak_groups, dpeak_groups):
                 sub_peaks = sorted(pg, reverse=True, key=lambda p: ys[p])[:1]
+
+                if not len(sub_peaks):
+                    print('Peak group empty:', peak_separators, peak_separators[0]*dt)
+                    continue
+
+                gpeak = sub_peaks[0]
+
+                sub_dpeaks = dpg[dpg < gpeak] if np.any(dpg < gpeak) else dpeaks[dpeaks < gpeak]
+
+                if len(sub_dpeaks):
+                    dpeak = sorted(sub_dpeaks, key=lambda p: d_ys[p])[-1]
+                else:
+                    dpeak = gpeak-1
+
                 prom = signal.peak_prominences(ys, sub_peaks, wlen=wlen)
+
                 hw = signal.peak_widths(ys, sub_peaks, prominence_data=prom)
                 lw = signal.peak_widths(ys,  sub_peaks, rel_height=1-rel_onset, prominence_data=prom)
                 selected_peaks.extend(sub_peaks)
+                selected_dpeaks.extend([dpeak])
                 proms.extend(rezip(prom))
                 hwidths.extend(rezip(hw))
                 lwidths.extend(rezip(lw))
             selected_peaks = np.array(selected_peaks)
+            selected_dpeaks = np.array(selected_dpeaks)
 
         else:
             peaks = sorted(peaks, reverse=True, key=lambda p: ys[p])[:npeaks]
+            peaks_extended = [-np.inf] + sorted(peaks) + [np.inf]
             selected_peaks = np.array(sorted(peaks))
+            grouped_dpeaks = group_locs_between_separators(dpeaks, peaks_extended)
+            #print('----- ', selected_peaks, grouped_dpeaks)
+
+            selected_dpeaks = [sorted(dpg, key=lambda p:d_ys[p])[-1] for dpg in grouped_dpeaks[:-1]]
+            selected_dpeaks = np.array(selected_dpeaks)
 
             proms = signal.peak_prominences(ys, selected_peaks, wlen=wlen)
             hwidths = signal.peak_widths(ys, selected_peaks, prominence_data=proms)
             lwidths = signal.peak_widths(ys,  selected_peaks, rel_height=1-rel_onset, prominence_data=proms)
-            
+
             # regroups the params
             proms, hwidths, lwidths = [rezip(col) for col in (proms, hwidths, lwidths)]
 
@@ -604,12 +632,17 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             prom = proms[i]
             hw = hwidths[i]
             lw = lwidths[i]
+            dpeak = selected_dpeaks[i]
             row = dict(prominence = prom[0],
+                       left_base=prom[1],
+                       right_base=prom[2],
                        peak_amp = ys[selected_peaks[i]], #!
                        fwhm = hw[0]*dt,
-                       onset = lw[2]*dt,
+                       gonset=dpeak*dt,
+                       ronset = lw[2]*dt,
                        time_to_peak = selected_peaks[i]*dt, #!
                        time_to_half = hw[2]*dt,
+                       time_to_half_right = hw[3]*dt,
                        finish = lw[3]*dt,
                        onset_amp =rel_onset,
                        )
@@ -617,7 +650,8 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             row = dict(prominence = np.nan,
                        peak_amp = np.nan,
                        fwhm = np.nan,
-                       onset = np.nan,
+                       gonset=np.nan,
+                       ronset = np.nan,
                        time_to_peak = np.nan,
                        time_to_half = np.nan,
                        finish = np.nan,
@@ -629,19 +663,29 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
         if ax is None:
             fig, ax = plt.subplots(1,1, figsize=(6,3))
 
+        tv = np.arange(len(y))*dt
+        ax.plot(tv, y, color='gray')
 
-        ax.plot(y, color='gray')
-
-        ax.plot(ys, alpha=0.75)
+        ax.plot(tv, ys, alpha=0.75)
         #plot(yss, alpha=0.5)
         if len(selected_peaks):
-            ax.plot(selected_peaks, ys[selected_peaks], 'rv')
-            ax.vlines(selected_peaks, ymin=ys[selected_peaks]-np.array(proms)[:,0], ymax=ys[selected_peaks], color='g')
+            ax.plot(selected_peaks*dt, ys[selected_peaks], 'rv')
+            ax.vlines(selected_peaks*dt, ymin=ys[selected_peaks]-np.array(proms)[:,0], ymax=ys[selected_peaks], color='g')
+
+            if peak_separators is not None:
+                for ps in peak_separators:
+                    ax.axvline(ps*dt, color='cyan', ls='-', lw=0.5)
+
+            for dp in selected_dpeaks:
+                ax.axvline(dp*dt, color='m', ls='--', lw=0.5)
+
+            for prom in proms:
+                ax.axvspan(prom[1]*dt, prom[2]*dt, alpha=0.1, color='papayawhip', zorder=-1)
 
             for hw,lw in zip(hwidths, lwidths):
-                ax.hlines(hw[1], xmin=hw[2],xmax=hw[3],color='g')
-                ax.axvline(lw[2], color='y', ls='--' )
-                ax.axvline(lw[3], color='y', ls=':', lw=0.5 )
+                ax.hlines(hw[1], xmin=hw[2]*dt,xmax=hw[3]*dt,color='g')
+                ax.axvline(lw[2]*dt, color='y', ls='--',lw=0.5)
+                ax.axvline(lw[3]*dt, color='y', ls=':', lw=0.5 )
 
     return res
 
