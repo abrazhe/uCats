@@ -612,8 +612,10 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             selected_peaks = np.array(sorted(peaks))
             grouped_dpeaks = group_locs_between_separators(dpeaks, peaks_extended)
             #print('----- ', selected_peaks, grouped_dpeaks)
-
-            selected_dpeaks = [sorted(dpg, key=lambda p:d_ys[p])[-1] for dpg in grouped_dpeaks[:-1]]
+            #print('---- grouped_dpeaks', grouped_dpeaks)
+            
+            selected_dpeaks = [sorted(dpg, key=lambda p:d_ys[p])[-1] if len(dpg) else selected_peaks[j]-1
+                               for j,dpg in enumerate(grouped_dpeaks[:-1]) ]
             selected_dpeaks = np.array(selected_dpeaks)
 
             proms = signal.peak_prominences(ys, selected_peaks, wlen=wlen)
