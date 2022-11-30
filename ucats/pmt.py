@@ -165,10 +165,16 @@ def estimate_gain_and_offset(frames,
             f.savefig(save_to)
     return results[return_type]
 
-def estimate_clip_level(frames, max_use_frames=5000):
+def estimate_clip_level(frames, max_use_frames=5000, aggressive=False):
     gain, offset = estimate_gain_and_offset(frames, phigh=99, ntries=300)
-    u_raw = np.unique(frames[:min(len(frames),max_use_frames)])
-    return np.min(u_raw[u_raw > offset])
+    clip = int(np.ceil(offset))
+    if aggressive:
+        tslice = slice(0, min(len(frames), max_use_frames))
+        clip = frames[tslice][frames[tslice]>clip].min()
+        clip = int(np.ceil(clip))
+    #u_raw = np.unique(frames[:min(len(frames),max_use_frames)])
+    #return np.min(u_raw[u_raw > offset])
+    return clip
 
 
 def convert_from_varstab(df, b):
