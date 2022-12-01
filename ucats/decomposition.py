@@ -5,6 +5,7 @@ from numpy import linalg
 
 from scipy import ndimage as ndi
 from scipy.stats import skew
+import scipy as sp
 
 from sklearn.feature_extraction.image import grid_to_graph
 
@@ -287,7 +288,7 @@ class Windowed_tSVD():
             patch_tsize = L
         else:
             patch_tsize = self.patch_tsize
-        
+
         if self.toverlap >= patch_tsize:
             self.toverlap = patch_tsize // 4
 
@@ -375,7 +376,7 @@ class Windowed_tSVD():
                 patch_tsize = L
             else:
                 patch_tsize = self.patch_tsize
-            
+
             if patch_tsize >= L:
                 t_crossfade = np.ones(L, _dtype_)
             else:
@@ -465,7 +466,7 @@ class Windowed_tHOSVD():
             patch_tsize = L
         else:
             patch_tsize = self.patch_tsize
-        
+
 
         if self.toverlap >= patch_tsize:
             self.toverlap = patch_tsize // 4
@@ -602,3 +603,30 @@ def tanh_step(x, window, overlap, taper_k=None):
     A = np.tanh((x+0.5-taper_width) / taper_k)
     B = np.tanh((window-(x+0.5)-taper_width) / taper_k)
     return np.clip((1.01 + A*B)/2, 0, 1)
+
+
+def DyCA(data, min_ncomp=2, eig_threshold = 0.98):
+    "Given data of the form (time, sensors) returns the DyCA projection and projected data with eigenvalue threshold eig_threshold"
+    derivative_data = np.gradient(data,axis=0,edge_order=1) #get the derivative of the data
+    L = data.shape[0] #for time averaging
+    #construct the correlation matrices
+    C0 = data.T @ data / L
+    C1 = derivative_data.T @ data / L
+    C2 = derivative_data.T @ derivative_data / L
+
+    try:
+        eigvalues, eigvectors = sp.linalg.eig(C1 @ np.linalg.inv(C0) @ C1.T, C2)
+        eigvalues = eigvalues.real
+        sorted_eigvals = sorted(eigvalues, reverse=True)
+        min_ncomp = min(min_ncomp, len(eigvalues))
+        eig_threshold = min(sorted_eigvals[min_ncomp-1], eig_threshold)
+        eigvectors = eigvectors[:,np.array(eigvalues > eig_threshold) &  np.array(eigvalues <= 1)] # eigenvalues > 1 are artifacts of singularity of C0
+        if eigvectors.shape[1] > 0:
+            #C3 = np.matmul(np.linalg.inv(C1), C2)
+            C3 = np.linalg.inv(C1)@C2
+            proj_mat = np.concatenate((eigvectors, np.apply_along_axis(lambda x: C3@x, 0, eigvectors)),axis=1)
+        else:
+            raise ValueError('No generalized eigenvalue fulfills threshold!')
+        return proj_mat, data@proj_mat, eigvalues
+    except np.linalg.LinAlgError:
+        return np.nan, np.nan, np.zeros(data.shape[1])+np.nan
