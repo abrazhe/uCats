@@ -605,7 +605,7 @@ def tanh_step(x, window, overlap, taper_k=None):
     return np.clip((1.01 + A*B)/2, 0, 1)
 
 
-def DyCA(data, min_ncomp=2, eig_threshold = 0.98):
+def DyCA(data, min_ncomp=2, eig_threshold = 0.98, vebose=True):
     "Given data of the form (time, sensors) returns the DyCA projection and projected data with eigenvalue threshold eig_threshold"
     derivative_data = np.gradient(data,axis=0,edge_order=1) #get the derivative of the data
     L = data.shape[0] #for time averaging
@@ -616,11 +616,20 @@ def DyCA(data, min_ncomp=2, eig_threshold = 0.98):
 
     try:
         eigvalues, eigvectors = sp.linalg.eig(C1 @ np.linalg.inv(C0) @ C1.T, C2)
-        eigvalues = eigvalues.real
-        sorted_eigvals = sorted(eigvalues, reverse=True)
+        eigvalues = np.abs(eigvalues).real
+        #print('Any eigenvalues > 1? ', np.sum(eigvalues > 1))
+        eigvectors = eigvectors[:,eigvalues <= 1]
+        eigvalues = eigvalues[eigvalues <= 1] # eigenvalues > 1 are artifacts of singularity of C0
+        if not len(eigvalues):
+            return np.nan, np.nan, np.zeros(data.shape[1])+np.nan
+        ksort = np.argsort(eigvalues)[::-1]
+        eigvalues = eigvalues[ksort]
+        eigvectors = eigvectors[:,ksort]
+        #print(min_ncomp, len(eigvalues), len(eigvectors))
         min_ncomp = min(min_ncomp, len(eigvalues))
-        eig_threshold = min(sorted_eigvals[min_ncomp-1], eig_threshold)
-        eigvectors = eigvectors[:,np.array(eigvalues > eig_threshold) &  np.array(eigvalues <= 1)] # eigenvalues > 1 are artifacts of singularity of C0
+
+        eig_threshold = min(eigvalues[min_ncomp-1], eig_threshold)
+        eigvectors = eigvectors[:,np.array(eigvalues > eig_threshold)]
         if eigvectors.shape[1] > 0:
             #C3 = np.matmul(np.linalg.inv(C1), C2)
             C3 = np.linalg.inv(C1)@C2

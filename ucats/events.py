@@ -106,8 +106,9 @@ class EventCollection:
         o = self.objs[k]
         return fn(data[o][self.event_volume_mask(k)])
 
-    def to_DataFrame(self):
-        return pd.DataFrame(self.filtered_coll)
+    def to_DataFrame(self, use_filtered_coll=True):
+        coll = self.filtered_coll if use_filtered_coll else self.coll
+        return pd.DataFrame(coll)
 
     def flatmask_fullframe(self, k):
         o = self.objs[k]
