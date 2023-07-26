@@ -61,7 +61,9 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
     return np.clip(m, *px)
 
 
-def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, kind='first', with_plot=False):
+def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, 
+                  min_height_factor=0.5,
+                  kind='first', with_plot=False):
     """alternative mode estimator
      - kind: {'first' | 'highest'}
     """
@@ -71,7 +73,8 @@ def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, kind='first', wit
     bins_smooth = l2spline(counts, smooth_factor)
     #mode  = edges[np.argmax(bins_smooth)]
 
-    peak_locs, peak_props =signal.find_peaks(bins_smooth, height=np.max(bins_smooth)/2)
+    peak_locs, peak_props =signal.find_peaks(bins_smooth, 
+                                             height=min_height_factor*np.max(bins_smooth))
 
     if kind == 'first':
         kpeak = peak_locs[0]

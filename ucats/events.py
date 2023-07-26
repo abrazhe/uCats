@@ -125,7 +125,7 @@ class EventCollection:
 
     def to_filtered_array(self):
         sh = self.labels.shape
-        out = np.zeros(sh, dtype=np.int)
+        out = np.zeros(sh, dtype=int)
         for d in self.filtered_coll:
             k = d['idx']
             o = self.objs[k]
