@@ -12,7 +12,7 @@ def local_jitter(v, sigma=5):
     vx = np.copy(v)
     Wvx = np.zeros(L)
     for i in range(L):
-        j = i + np.int(np.round(np.random.randn() * sigma))
+        j = i + int(np.round(np.random.randn() * sigma))
         j = max(0, min(j, L - 1))
         vx[i] = v[j]
         vx[j] = v[i]
@@ -24,8 +24,8 @@ def local_jitter2d(img, sigma_r=3, sigma_c=3):
     imgx = np.copy(img)
     for r in range(nr):
         for c in range(nc):
-            rj = r + np.int(np.round(np.random.randn() * sigma_r))
-            cj = c + np.int(np.round(np.random.randn() * sigma_c))
+            rj = r + int(np.round(np.random.randn() * sigma_r))
+            cj = c + int(np.round(np.random.randn() * sigma_c))
 
             rj = max(0, min(rj, nr-1))
             cj = max(0, min(cj, nc-1))
