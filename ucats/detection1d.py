@@ -89,7 +89,7 @@ def simple_pipeline_(y,
     """
     Detect and reconstruct Ca-transients in 1D signal
     """
-    if not any(y):
+    if not np.any(y):
         return np.zeros_like(y)
 
     ns = rolling_sd_pd(y) if noise_sigma is None else noise_sigma

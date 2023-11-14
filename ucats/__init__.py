@@ -18,6 +18,7 @@ from . import pmt
 
 from .pmt import estimate_gain_and_offset
 from .anscombe import Anscombe
+from .haar_fisz import HaarFisz
 from .utils import clip_outliers, mad_std
 
 import numpy as np

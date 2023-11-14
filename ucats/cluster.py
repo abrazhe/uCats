@@ -189,7 +189,7 @@ class UMAP_MiniBatchKMeans(UMAP_Preprocessed):
 class UMAP_KMeans(UMAP_Preprocessed):
     def __init__(self, nclust):
         super(UMAP_KMeans, self).__init__()
-        self.clusterer = skclust.KMeans(nclust)
+        self.clusterer = skclust.KMeans(nclust,n_init='auto')
 
 
 class UMAP_HDBSCAN(UMAP_Preprocessed):
@@ -206,8 +206,8 @@ class UMAP_DumbConsensus(UMAP_Preprocessed):
 
 clustering_dispatcher_ = {
     'AgglomerativeWard'.lower(): lambda nclust: skclust.AgglomerativeClustering(nclust),
-    'KMeans'.lower(): lambda nclust: skclust.KMeans(nclust),
-    'MiniBatchKMeans'.lower(): lambda nclust: skclust.MiniBatchKMeans(nclust),
+    'KMeans'.lower(): lambda nclust: skclust.KMeans(nclust,n_init='auto'),
+    'MiniBatchKMeans'.lower(): lambda nclust: skclust.MiniBatchKMeans(nclust,n_init='auto'),
     'UMAP_DBSCAN'.lower(): lambda nclust: UMAP_HDBSCAN(min_samples=15),
     'UMAP_KMeans'.lower(): lambda nclust: UMAP_KMeans(nclust),
     'UMAP_MiniBatchKMeans'.lower(): lambda nclust: UMAP_MiniBatchKMeans(nclust),
