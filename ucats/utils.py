@@ -61,6 +61,33 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
     return np.clip(m, *px)
 
 
+@jit
+def topple_largest(v, iters=1):
+    v = v.copy()
+    for i in range(iters):
+        k = np.argmax(v)
+        jn1 = k + 1 if k < len(v)-1 else k-1
+        jn2 = k + 2 if k < len(v)-2 else k-2
+        x = v[k]
+        dropn1 = (v[k]-v[jn1])*0.5
+        dropn2 = (v[k]-v[jn2])*0.5
+        share = np.random.rand()
+        v[k] -= share*dropn1 + (1-share)*dropn2
+        v[jn1] += share*dropn1
+        v[jn2] += (1-share)*dropn2
+    return v
+
+@jit
+def cut_largest(v, iters=1):
+    v = v.copy()
+    for i in range(iters):
+        k = np.argmax(v)
+        jn1 = k-1 if k > 0 else k + 2
+        jn2 = k + 1 if k < len(v)-1 else k - 2
+        v[k] = 0.5*(v[jn1] + v[jn2])
+    return v
+
+
 def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, 
                   min_height_factor=0.5,
                   kind='first', with_plot=False):
