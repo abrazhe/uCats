@@ -61,6 +61,12 @@ def haar(v, level=None, with_fisz=False):
     if level is None:
         level = max_level(L)
 
+    # if using Fisz transform, clip values below 0
+    if with_fisz:
+        for i in range(L):
+            if v_temp[i] < 0:
+                v_temp[i] = 0        
+
     H = L
 
     for j in range(level):
