@@ -65,7 +65,7 @@ def haar(v, level=None, with_fisz=False):
     if with_fisz:
         for i in range(L):
             if v_temp[i] < 0:
-                v_temp[i] = 0        
+                v_temp[i] = 0
 
     H = L
 
@@ -110,15 +110,15 @@ class HaarFisz:
     based on FryzlewiCz and Nason 2004, DOI:10.1198/106186004X2697
     """
     @staticmethod
-    def transform(data):
+    def transform(data,level=None):
         """Apply forward Haar-Fisz variance-stabilizing transform
         negative input values will be clipped at zero
         """
-        return np.apply_along_axis(fisz, 0, data)
+        return np.apply_along_axis(fisz, 0, data, level=level)
 
     @staticmethod
-    def inverse_transform(data):
-        return np.apply_along_axis(ifisz, 0, data)
+    def inverse_transform(data, level=None):
+        return np.apply_along_axis(ifisz, 0, data, level=level)
 
     @staticmethod
     def wrap_input(func):
