@@ -19,6 +19,9 @@ from ..anscombe import Anscombe
 from ..cluster import sort_by_clust, clustering_dispatcher_
 
 from ..decomposition import (min_ncomp, SVD_patch, Windowed_tSVD)
+from ..decomposition import ndWindowed_tSVD
+
+
 
 from ..globals import _dtype_
 
@@ -215,7 +218,7 @@ def process_flat_collection(samples,
     return samples_approx
 
 
-class NL_Windowed_tSVD(Windowed_tSVD):
+class NL_Windowed_tSVD(ndWindowed_tSVD.ndWindowed_tSVD):
     def __init__(self,
                  Nhood=100,
                  do_signals=True,

@@ -88,7 +88,7 @@ def cut_largest(v, iters=1):
     return v
 
 
-def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95, 
+def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
                   min_height_factor=0.5,
                   kind='first', with_plot=False):
     """alternative mode estimator
@@ -100,7 +100,7 @@ def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
     bins_smooth = l2spline(counts, smooth_factor)
     #mode  = edges[np.argmax(bins_smooth)]
 
-    peak_locs, peak_props =signal.find_peaks(bins_smooth, 
+    peak_locs, peak_props =signal.find_peaks(bins_smooth,
                                              height=min_height_factor*np.max(bins_smooth))
 
     if kind == 'first':
@@ -643,7 +643,7 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             grouped_dpeaks = group_locs_between_separators(dpeaks, peaks_extended)
             #print('----- ', selected_peaks, grouped_dpeaks)
             #print('---- grouped_dpeaks', grouped_dpeaks)
-            
+
             selected_dpeaks = [sorted(dpg, key=lambda p:d_ys[p])[-1] if len(dpg) else selected_peaks[j]-1
                                for j,dpg in enumerate(grouped_dpeaks[:-1]) ]
             selected_dpeaks = np.array(selected_dpeaks)
@@ -756,6 +756,39 @@ def bin_frames(frames, tbin=1, sbin=1, trim_margins=True):
         #frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
         cval = np.min(frames[-min(tbin,L):])
         frames = skmeasure.block_reduce(frames, (tbin, sbin, sbin), cval = cval, func=np.sum)
+    if tpad > 0 and trim_margins:
+        #frames = frames[:-tpad]
+        #frames[-tpad:] = frames[-tpad-1] # avoid dark last frames if padding was required
+        frames = frames[:-1]
+        pass
+    if dtype.kind in 'iu':
+        vmin = np.min(frames)
+        frames = frames - vmin
+        vmax = frames.max()
+        if vmax < 2**16:
+            frames = frames.astype(np.uint16)
+        #else:
+        #frames = frames.astype(_dtype_)
+    return frames
+
+def ndbin_volume(frames, bins=None, trim_margins=True):
+    #from skimage import transform as sktransform
+    from skimage import measure as skmeasure
+    dtype = frames.dtype
+
+    if bins is None:
+        bins = np.ones(len(frames.shape))
+
+    tbin = bins[0]
+
+    tpad = len(frames)%tbin
+    L,Z = frames.shape[:2]
+
+
+    if np.any(np.array(bins)>1):
+        #frames = sktransform.downscale_local_mean(frames, factors=(tbin, sbin, sbin))
+        cval = np.min(frames[-min(tbin,L):])
+        frames = skmeasure.block_reduce(frames, bins, cval = cval, func=np.sum)
     if tpad > 0 and trim_margins:
         #frames = frames[:-tpad]
         #frames[-tpad:] = frames[-tpad-1] # avoid dark last frames if padding was required

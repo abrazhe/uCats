@@ -6,7 +6,7 @@ from sklearn import linear_model
 from matplotlib import pyplot as plt
 
 from imfun.core import extrema
-from .patches import extract_random_column
+from .patches import extract_random_column,extract_random_cubic_patch
 
 from .globals import _dtype_
 
@@ -78,6 +78,7 @@ def estimate_gain_and_offset(frames,
 
     pxr = np.array([
         _simple_stats(extract_random_column(frames, patch_width)) for i in range(npatches)
+        #_simple_stats(extract_random_cubic_patch(frames, patch_width)) for i in range(npatches)
     ])
 
     x_uniq = np.unique(pxr[:,0])

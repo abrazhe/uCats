@@ -76,7 +76,8 @@ def extract_random_cubic_patch(frames, w=10):
      - w : scalar int, side of the cubic patch [10]
     """
     sl = tuple()
-    starts = (np.random.randint(0, dim - w) for dim in np.shape(frames))
+    starts = (np.random.randint(0, dim - w) if dim-w > 0 else 0
+              for dim in np.shape(frames))
     sl = tuple(slice(j, j + w) for j in starts)
     return frames[sl]
 
@@ -85,7 +86,8 @@ def extract_random_column(frames, w=10):
     if not np.iterable(w):
         w = (w, ) * np.ndim(frames)
     sh = frames.shape
-    loc = tuple(np.random.randint(0, s - wi) for s, wi in zip(sh, w))
+    loc = tuple(np.random.randint(0, s - wi) if s-wi > 0 else 0
+                for s, wi in zip(sh, w))
     sl = tuple(slice(j, j + wi) for j, wi in zip(loc, w))
     #print(loc, sl)
     return frames[sl]
