@@ -218,7 +218,8 @@ def process_flat_collection(samples,
     return samples_approx
 
 
-class NL_Windowed_tSVD(ndWindowed_tSVD.ndWindowed_tSVD):
+
+class NL_Windowed_tSVD(Windowed_tSVD):
     def __init__(self,
                  Nhood=100,
                  do_signals=True,
@@ -350,6 +351,146 @@ class NL_Windowed_tSVD(ndWindowed_tSVD.ndWindowed_tSVD):
         return self.nl_update_components(collection, **kwargs)
 
 
+# ------------------------------------------------------------------------------------------------------------
+
+class ndNL_Windowed_tSVD():
+    def __init__(self,
+                 Nhood=100,
+                 do_signals=True,
+                 do_spatial=True,
+                 n_clusters=_nclusters_,
+                 temporal_mode='flatTV-means',
+                 tv_samples_per_cluster=10,
+                 verbose=False,
+                 **kwargs):
+        self.transform = ndWindowed_tSVD.ndWindowed_tSVD(**kwargs)
+        self.Nhood = Nhood
+        self.n_clusters = n_clusters
+        self.temporal_mode = temporal_mode
+        self.tv_samples_per_cluster = tv_samples_per_cluster
+        self.tv_sigma = 1.5
+        self.tv_niters = 3
+        self.clustering_algorithm = 'MiniBatchKMeans'
+        self.do_spatial = do_spatial
+        self.do_signals = do_signals
+        self.denoise_ansc = Anscombe.wrap(self.denoise)
+        self.do_shift_expansion_=False
+        self.verbose = verbose
+        self.transform.verbose = verbose
+
+    def copy(self):
+        state_vars = ['Nhood',
+                      'n_clusters',
+                      'temporal_mode',
+                      'tv_samples_per_cluster',
+                      'tv_sigma',
+                      'tv_niters',
+                      'clustering_algorithm',
+                      'transform',
+                      'do_signals',
+                      'do_spatial',
+                      'do_shift_expansion_',]
+
+        newobj = self.__class__()
+        newobj.__dict__.update(**{key:self.__dict__[key] for key in state_vars})
+        if hasattr(self, 'full_data_shape_'):
+            newobj.full_data_shape_ = self.full_data_shape_
+        return newobj
+
+    def denoise(self, frames):
+        coll = self.fit_transform(frames)
+        return self.transform.inverse_transform(coll)
+
+    def fit_transform(self, frames, do_signals=None, do_spatial=None):
+        coll = self.transform.fit_transform(frames)
+
+        if do_signals is None: do_signals = self.do_signals
+        if do_spatial is None: do_spatial = self.do_spatial
+
+        if do_signals:
+            self.transform.patches_ = self.update_signals()
+        if do_spatial:
+            self.transform.patches_ = self.update_spatial()
+
+        self.data_shape_ = self.transform.data_shape_
+
+        return self.transform.patches_
+
+    def nl_update_components(self, collection=None, field='signals', **kwargs):
+        fsh = self.transform.data_shape_
+        if collection is None:
+            collection = self.transform.patches_
+        out_samples = [np.zeros(getattr(c, field).shape, _dtype_) for c in collection]
+        out_counts = np.zeros(len(collection), np.int)
+
+        squares = make_grid(fsh[1:], self.Nhood, self.Nhood // 2)
+        tstarts = set(c.sq[0].start for c in collection)
+        tsquares = [(t, sq) for t in tstarts for sq in squares]
+
+        def _is_local_patch(p, sqx):
+            t0, sq = sqx
+            tstart = p[0].start
+            psq = p[1:]
+            return (tstart == t0) & (slice_overlaps_square(psq, sq))
+
+        loop = tqdm(tsquares, desc=f'Updating SVD {field}', disable=not self.verbose)
+
+        for sqx in loop:
+            samples = [getattr(c, field)
+                       for c in collection if _is_local_patch(c.sq, sqx)]
+            flat_samples = np.vstack(samples)
+
+            # expand dictionary by temporal shifts
+            if field=='signals' and self.do_shift_expansion_:
+                add_samples = np.vstack([[np.roll(v,i) for i in (-2,-1,1,2)] for v in flat_samples])
+                flat_samples = np.vstack([flat_samples, add_samples])
+
+
+            loop.set_description(f'Updating window with {len(flat_samples)} {field}')
+            approx = process_flat_collection(flat_samples, **kwargs)
+            kstart = 0
+            for i, c in enumerate(collection):
+                if _is_local_patch(c.sq, sqx):
+                    l = len(getattr(c, field))
+                    out_samples[i] += approx[kstart:kstart + l]
+                    out_counts[i] += 1
+                    kstart += l
+        loop.close()
+
+        self.transform.patches_ = [
+            c._replace(**{field: x / (1e-7+cnt)})
+            for c, x, cnt in zip(collection, out_samples, out_counts)
+        ]
+        return self.transform.patches_
+
+    def update_signals(self, collection=None, temporal_mode=None, **kwargs):
+
+        if collection is None:
+            collection = self.transform.patches_
+
+        if temporal_mode is None:
+            temporal_mode = self.temporal_mode
+
+        kwargs = dict(field='signals',
+                      clustering_algorithm=self.clustering_algorithm,
+                      n_clusters=self.n_clusters,
+                      mode=temporal_mode,
+                      tv_samples_per_cluster=self.tv_samples_per_cluster,
+                      tv_sigma=self.tv_sigma,
+                      tv_niters=self.tv_niters,
+                      **kwargs)
+        return self.nl_update_components(collection, **kwargs)
+
+    def update_spatial(self, collection=None):
+        if collection is None:
+            collection = self.transform.patches_
+        #kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd', n_clusters=1)
+        kwargs = dict(field='filters', Nhood=self.Nhood, mode='cluster-svd')
+        #kwargs = dict(field='filters', Nhood=self.Nhood, mode='flatTV-means')#, n_clusters=1)
+        return self.nl_update_components(collection, **kwargs)
+
+# ------------------------------------------------------------------------------------------------------------
+    
 from skimage import transform as sktransform
 
 class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):
