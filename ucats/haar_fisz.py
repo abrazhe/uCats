@@ -2,14 +2,14 @@ import numpy as np
 
 from numba import jit
 
-@jit
+@jit(nopython=True)
 def vec_copy(v,u):
     L = len(v)
     for i in range(L):
         u[i] = v[i]
     return
 
-@jit
+@jit(nopython=True)
 def haar_step(v, out=None, with_fisz=False):
     L = len(v)
     H = L//2
@@ -30,7 +30,7 @@ def haar_step(v, out=None, with_fisz=False):
 
     return out
 
-@jit
+@jit(nopython=True)
 def ihaar_step(u, out=None, with_fisz=False):
     L = len(u)
     H = L//2
@@ -48,11 +48,11 @@ def ihaar_step(u, out=None, with_fisz=False):
 
 
 
-@jit
+@jit(nopython=True)
 def max_level(L):
     return int(np.ceil(np.log2(L)))
 
-@jit
+@jit(nopython=True)
 def haar(v, level=None, with_fisz=False):
     out = np.zeros_like(v)
     v_temp = v.copy()
@@ -78,7 +78,7 @@ def haar(v, level=None, with_fisz=False):
             break
     return out
 
-@jit
+@jit(nopython=True)
 def ihaar(v, level=None, with_fisz=False):
     out = np.zeros_like(v)
     v_temp = np.zeros_like(v)

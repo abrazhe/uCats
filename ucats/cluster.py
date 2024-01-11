@@ -27,7 +27,7 @@ _nclusters_ = 32
 from numba import jit
 
 
-@jit
+@jit(nopython=True)
 def calc_coincidents(labels):
     Npts = len(labels)
     out = np.zeros((Npts, Npts))

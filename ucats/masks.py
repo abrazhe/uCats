@@ -8,7 +8,7 @@ import itertools as itt
 from imfun import bwmorph, cluster
 
 
-@jit
+@jit(nopython=True)
 def percentile_th_frames(frames, plow=5):
     sh = frames[0].shape
     #medians = np.median(frames, axis=0)
@@ -148,7 +148,7 @@ def cleanup_cluster_map(m, min_neighbors=1, niter=1):
     Nr, Nc = m.shape
     cval = np.min(m) - 1
     m = np.pad(m, 1, mode='constant', constant_values=cval)
-    @jit
+    @jit(nopython=True)
     def _process(m):
         for j in range(niter):
             for r in range(1, Nr):

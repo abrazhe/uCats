@@ -6,7 +6,7 @@ import numpy as np
 from numba import jit
 
 
-@jit
+@jit(nopython=True)
 def local_jitter(v, sigma=5):
     L = len(v)
     vx = np.copy(v)
@@ -18,7 +18,7 @@ def local_jitter(v, sigma=5):
         vx[j] = v[i]
     return vx
 
-@jit
+@jit(nopython=True)
 def local_jitter2d(img, sigma_r=3, sigma_c=3):
     nr,nc = img.shape
     imgx = np.copy(img)

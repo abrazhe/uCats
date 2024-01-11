@@ -4,7 +4,7 @@ from numba import jit
 
 _vmin_ = 2*np.sqrt(3/8)
 
-@jit
+@jit(nopython=True)
 def approximate_inverse_transform(d):
     d = np.maximum(d, _vmin_ + 2e-16)
     dsq = d*d
@@ -31,7 +31,7 @@ class Anscombe:
             return approximate_inverse_transform(D)
 
     @staticmethod
-    @jit
+    @jit(nopython=True)
     def inverse_transform_jit(Din, Dout=None):
         sh = Din.shape
         if Dout is None:

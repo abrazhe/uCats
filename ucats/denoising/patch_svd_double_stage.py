@@ -82,7 +82,7 @@ def separable_iterated_tv_chambolle2(im, sigma_x=1, sigma_y=1, niters=5):
     return im_w
 
 
-@jit
+@jit(nopython=True)
 def unsort(v, ksort):
     #z = np.arange(len(v))
     out = np.zeros(v.shape)
@@ -106,7 +106,7 @@ def windowed_flat_tv(img,
     tslices = [(slice(None), t) for t in tslices]
 
     if samples_per_cluster is not None:
-        nclust = np.int(np.ceil(nr / samples_per_cluster))
+        nclust = int(np.ceil(nr / samples_per_cluster))
     else:
         nclust = None
 
@@ -173,7 +173,7 @@ def process_flat_collection(samples,
         sample_batches = [(1,samples)]
 
         if Nsamples > _large_nsamples:
-            npartition = np.int(np.round(Nsamples / _large_nsamples)) + 1
+            npartition = int(np.round(Nsamples / _large_nsamples)) + 1
             #clustx = clustering_dispatcher_['kmeans'](npartition)
             #clustx.batch_size = min(clustx.batch_size, Nsamples)
             #u,s,vh = np.linalg.svd(samples,False)
@@ -185,7 +185,7 @@ def process_flat_collection(samples,
             if 'tv_samples_per_cluster' in kwargs:
                 samples_per_cluster = kwargs['tv_samples_per_cluster']
             else:
-                samples_per_cluster = np.int(np.round(len(batch) / nclust))
+                samples_per_cluster = int(np.round(len(batch) / nclust))
 
             #print(len(batch))
             if len(batch):
@@ -282,7 +282,7 @@ class NL_Windowed_tSVD(Windowed_tSVD):
         if collection is None:
             collection = self.patches_
         out_samples = [np.zeros(getattr(c, field).shape, _dtype_) for c in collection]
-        out_counts = np.zeros(len(collection), np.int)
+        out_counts = np.zeros(len(collection), int)
 
         squares = make_grid(fsh[1:], self.Nhood, self.Nhood // 2)
         tstarts = set(c.sq[0].start for c in collection)
@@ -421,7 +421,7 @@ class ndNL_Windowed_tSVD():
         if collection is None:
             collection = self.transform.patches_
         out_samples = [np.zeros(getattr(c, field).shape, _dtype_) for c in collection]
-        out_counts = np.zeros(len(collection), np.int)
+        out_counts = np.zeros(len(collection), int)
 
         squares = make_grid(fsh[1:], self.Nhood, self.Nhood // 2)
         tstarts = set(c.sq[0].start for c in collection)
@@ -490,7 +490,7 @@ class ndNL_Windowed_tSVD():
         return self.nl_update_components(collection, **kwargs)
 
 # ------------------------------------------------------------------------------------------------------------
-    
+
 from skimage import transform as sktransform
 
 class Multiscale_NL_Windowed_tSVD(NL_Windowed_tSVD):

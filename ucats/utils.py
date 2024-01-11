@@ -61,7 +61,7 @@ def clip_outliers(m, plow=0.5, phigh=99.5):
     return np.clip(m, *px)
 
 
-@jit
+@jit(nopython=True)
 def topple_largest(v, iters=1):
     v = v.copy()
     for i in range(iters):
@@ -77,7 +77,7 @@ def topple_largest(v, iters=1):
         v[jn2] += (1-share)*dropn2
     return v
 
-@jit
+@jit(nopython=True)
 def cut_largest(v, iters=1):
     v = v.copy()
     for i in range(iters):
@@ -152,7 +152,7 @@ def scrambling_anti_aliasing(frames, niters=1, spatial_sigma=0.33, temporal_sigm
             w=temporal_sigma)
     return out/niters
 
-@jit
+@jit(nopython=True)
 def avg_filter_greater(m, th=0):
     nr, nc = m.shape
     out = np.zeros_like(m)
@@ -274,7 +274,7 @@ def find_rolling_bias(y, th=3, ns=None, window=None):
     return ndi.median_filter(yx, window)
 
 
-@jit
+@jit(nopython=True)
 def find_bias_frames(frames, th, ns):
     #signals = ah.ravel_frames(frames).T
     signals = np.reshape(frames, (len(frames),-1)).T

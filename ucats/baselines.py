@@ -57,7 +57,7 @@ def load_baseline_pickle(name):
     return pcf.inverse_transform(pcf.coords)
 
 
-@jit
+@jit(nopython=True)
 def running_min(v):
     out = np.zeros(v.shape)
     mn = v[0]
@@ -67,7 +67,7 @@ def running_min(v):
     return out
 
 
-@jit
+@jit(nopython=True)
 def running_envelope(v):
     out = np.zeros(v.shape+(2,))
     mn = v[0]
