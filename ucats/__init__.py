@@ -23,3 +23,6 @@ from .utils import clip_outliers, mad_std
 
 import numpy as np
 _dtype_ = np.float32
+
+from . import _version
+__version__ = _version.__version__

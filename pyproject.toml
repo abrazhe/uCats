@@ -1,0 +1,47 @@
+[project]
+name = "ucats"
+description = "code for analysis of Ca dynamics in fluorescent microscopy data"
+authors = [
+    {name = "Alexey Brazhe", email = "brazhe@gmail.com"},
+]
+dynamic = ["version"]
+dependencies = [
+    "numpy",
+    "scipy",
+    "numba",
+    "scikit-image",
+    "scikit-learn",
+    "fastdtw",
+    "tqdm",
+    "hdbscan",
+    "image-funcut@git+https://github.com/abrazhe/image-funcut.git@develop",
+]
+requires-python = ">=3.9"
+readme = "README.md"
+license = {text = "GPL"}
+classifiers = [
+       'Development Status :: 4 - Beta',
+       "Intended Audience :: Science/Research",
+       'License :: OSI Approved :: GNU General Public License (GPL)',
+       'Operating System :: OS Independent :: Linux',
+       'Programming Language :: Python :: 3',
+       'Topic :: Scientific/Engineering',
+     ]
+
+[project.urls]
+"Homepage" = "https://github.com/abrazhe/uCats"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.flit]
+source='scm'
+
+[tool.pdm.build]
+includes=['ucats/']
+
+[tool.pdm.version]
+source = "scm"
+write_to = "ucats/_version.py"
+write_template = "__version__ = '{}'"
