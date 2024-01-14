@@ -112,9 +112,6 @@ def mask2points(mask):
     "mask to a list of points, as row,col"
     return np.array([loc for loc in locations(mask.shape) if mask[loc]])
 
-
-
-
 def cleanup_mask(m, eps=3, min_pts=5):
     if not np.any(m):
         return np.zeros_like(m)

@@ -35,8 +35,6 @@ classifiers = [
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
-[tool.flit]
-source='scm'
 
 [tool.pdm.build]
 includes=['ucats/']

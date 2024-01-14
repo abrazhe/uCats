@@ -336,7 +336,7 @@ def rolling_sd_pd(v,
                   smooth_output=True,
                   input_is_details=False):
     """
-    Etimate time-varying level of noise standard deviation
+    Estimate time-varying level of noise standard deviation
     """
     if not input_is_details:
         details = v - ndi.median_filter(v, 20)
