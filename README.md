@@ -1,5 +1,5 @@
 # μCats
-A set of routines for analsyis of Ca dynamics in fluorescent microscopy data.
+A set of routines for analysis of Ca dynamics in fluorescent microscopy data.
 Supported by RSF grant #17-74-20089 in 2017-2020
 
 This repository is a collection of tools for analysis of Ca transients, from 1D-signals (e.g. as exported from ROIs) to dynamical imaging and spatiotemporal events.

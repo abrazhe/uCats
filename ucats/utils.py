@@ -583,16 +583,17 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
                    peak_separators=None,  wlen=None, with_plot=False, ax=None):
 
     ys = ndi.gaussian_filter1d(y, smooth) if smooth > 0 else y
+    # peaks of derivatives
     d_ys = ndi.gaussian_filter1d(ys, smooth/2 if smooth > 0 else 1., order=1)
 
     peaks, props = signal.find_peaks(ys, distance=min_distance)
     dpeaks, dprops = signal.find_peaks(d_ys, distance=min_distance)
 
-    if peak_separators is not None:
-        npeaks = len(peak_separators) + 1
 
     # Search all peaks if npeaks is None
     if npeaks is None:
+        if peak_separators is not None:
+            npeaks = len(peak_separators) + 1
         npeaks = len(peaks)
     #npeaks = min(len(peaks), npeaks)
 
@@ -633,6 +634,7 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
                 proms.extend(rezip(prom))
                 hwidths.extend(rezip(hw))
                 lwidths.extend(rezip(lw))
+
             selected_peaks = np.array(selected_peaks)
             selected_dpeaks = np.array(selected_dpeaks)
 
@@ -701,20 +703,22 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
         ax.plot(tv, ys, alpha=0.75)
         #plot(yss, alpha=0.5)
         if len(selected_peaks):
-            ax.plot(selected_peaks*dt, ys[selected_peaks], 'rv')
-            ax.vlines(selected_peaks*dt, ymin=ys[selected_peaks]-np.array(proms)[:,0], ymax=ys[selected_peaks], color='g')
+            ax.plot(selected_peaks[:npeaks]*dt, ys[selected_peaks[:npeaks]], 'rv')
+            ax.vlines(selected_peaks[:npeaks]*dt,
+                      ymin=ys[selected_peaks[:npeaks]] - np.array(proms)[:npeaks,0],
+                      ymax=ys[selected_peaks[:npeaks]], color='g')
 
             if peak_separators is not None:
                 for ps in peak_separators:
                     ax.axvline(ps*dt, color='cyan', ls='-', lw=0.5)
 
-            for dp in selected_dpeaks:
+            for dp in selected_dpeaks[:npeaks]:
                 ax.axvline(dp*dt, color='m', ls='--', lw=0.5)
 
-            for prom in proms:
+            for prom in proms[:npeaks]:
                 ax.axvspan(prom[1]*dt, prom[2]*dt, alpha=0.1, color='papayawhip', zorder=-1)
 
-            for hw,lw in zip(hwidths, lwidths):
+            for hw,lw in zip(hwidths[:npeaks], lwidths[:npeaks]):
                 ax.hlines(hw[1], xmin=hw[2]*dt,xmax=hw[3]*dt,color='g')
                 ax.axvline(lw[2]*dt, color='y', ls='--',lw=0.5)
                 ax.axvline(lw[3]*dt, color='y', ls=':', lw=0.5 )
