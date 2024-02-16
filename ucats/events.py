@@ -1,5 +1,9 @@
+from collections import namedtuple
+
 import numpy as np
 import pandas as pd
+
+from tqdm.auto import tqdm
 
 from scipy import ndimage as ndi
 
@@ -132,3 +136,71 @@ class EventCollection:
             cond = self.labels[o] == k + 1
             out[o][cond] = k
         return out
+
+
+
+SegmentStates = namedtuple('SegmentStates', "inits stops carryover avg_new_size ages growth_rate")
+
+def split_segment_states(binary, with_ages=True, min_overlap_size=16):
+
+    acc_inits = np.zeros(len(binary), int)
+    acc_stops = np.zeros(len(binary),int)
+    acc_carryover = np.zeros(len(binary),int)
+
+    acc_avg_new_size = np.zeros(len(binary),int)
+    acc_expansion_rates = np.zeros(len(binary)) # todo!
+
+    if with_ages:
+        ages = np.zeros(binary.shape, dtype=np.uint16)
+    else:
+        ages = None
+
+    for k, m in enumerate(tqdm(binary)):
+        if k == 0:
+            m_prev = np.zeros(m.shape, bool)
+        else:
+            m_prev = binary[k-1]
+
+
+        labels = ndi.label(m)[0]
+        objs = ndi.find_objects(labels)
+        objs_prev = ndi.find_objects(ndi.label(m_prev)[0])
+
+        init_count = 0
+        remain_count = 0
+        sum_new_size = 0
+        growth_rate = 0
+        for j,o in enumerate(objs,start=1):
+            sub_mask = labels[o] == j
+
+            # exists now, didn't exist before
+            overlap = m_prev[o] & sub_mask
+            #print(np.sum(overlap))
+            if np.sum(overlap) < min_overlap_size/4:
+                init_count += 1
+                sum_new_size += np.sum(sub_mask)
+                ages[k][o][sub_mask] = 1
+            else:
+                remain_count += 1
+                growth_rate += np.sum(sub_mask) - np.sum(overlap)
+                if with_ages:
+                    ages[k][o][sub_mask] = np.max(ages[k-1][o][overlap])+1
+
+        acc_inits[k] = init_count
+        acc_carryover[k] = remain_count
+
+        if init_count > 0:
+            acc_avg_new_size[k] = sum_new_size/init_count
+
+        if remain_count > 0:
+            acc_expansion_rates[k] = growth_rate/remain_count
+
+        stop_count = 0
+        for o in objs_prev:
+            # existed before, doesn't exist now
+            if np.sum(m_prev[o] & m[o]) < min_overlap_size/4:
+                stop_count += 1
+        acc_stops[k] = stop_count
+
+    #return acc_inits, acc_stops,acc_carryover, acc_avg_new_size, ages, acc_expansion_rates
+    return SegmentStates(acc_inits, acc_stops, acc_carryover, acc_avg_new_size, ages, acc_expansion_rates)
