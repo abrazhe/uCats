@@ -48,7 +48,7 @@ from .utils import find_jumps
 
 
 def store_baseline_pickle(name, frames, ncomp=50):
-    pcf = components.pca.PCA_frames(frames, npc=50)
+    pcf = components.pca.PCA_frames(frames, npc=ncomp)
     pickle.dump(pcf, open(name, 'wb'))
 
 
@@ -405,7 +405,7 @@ def baseline_als_spl(y,
     via DCT-based spline smoothing
     """
     #npad=int(smooth)
-    nsmooth = np.int(np.ceil(smooth))
+    nsmooth = int(np.ceil(smooth))
     npad = nsmooth
 
     y = np.pad(y, npad, "reflect")
@@ -422,7 +422,7 @@ def baseline_als_spl(y,
         rsd = np.pad(rsd, npad, "reflect")
 
     #ys = l1spline(y,tau)
-    ntau = np.int(np.ceil(tau))
+    ntau = int(np.ceil(tau))
     ys = ndi.median_filter(y, ntau)
     s2 = l1spline(y, smooth / 4.)
     #s2 = l2spline(y,smooth/4.)
