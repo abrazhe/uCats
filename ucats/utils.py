@@ -594,7 +594,8 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
     if npeaks is None:
         if peak_separators is not None:
             npeaks = len(peak_separators) + 1
-        npeaks = len(peaks)
+        else:
+            npeaks = len(peaks)
     #npeaks = min(len(peaks), npeaks)
 
     def rezip(c):

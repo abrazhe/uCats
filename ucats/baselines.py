@@ -205,7 +205,7 @@ def l1_baseline2(y, smooth=25, median_window=50):
     return b1 + b_add
 
 
-def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline, fnkw=None):
+def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline, asym=True, fnkw=None):
     """Baseline from iterated thresholded smoothing"""
     if fnkw is None:
         fnkw = {}
@@ -213,7 +213,9 @@ def iterated_smoothing_baseline(y, niter=10, th=3, smooth_fn=l1spline, fnkw=None
     ns = mad_std(np.diff(y))
     for i_ in range(niter):
         ys = smooth_fn(ytemp, **fnkw)
-        ytemp = np.where(np.abs(y - ys) < ns * th, y, ys)
+        cond = (y > ys + ns*th) if asym else (np.abs(y - ys) > ns * th)
+        ytemp = np.where(cond, ys, y)
+        #ytemp = np.where(np.abs(ytemp - ys) < ns * th, y, ys)
     return ys
 
 
