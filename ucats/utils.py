@@ -22,7 +22,10 @@ from skimage.restoration import denoise_tv_chambolle
 
 from tqdm.auto import tqdm
 
+from fuzzywuzzy import fuzz
+
 from . import scramble
+
 
 def make_odd(n):
     return n + n%2 - 1
@@ -47,18 +50,54 @@ def upsample_image(img):
 def rescale_at_clim(m, vmin,vmax):
     return np.clip( (m-vmin)/(vmax-vmin), 0, 1)
 
-def rescale(data):
-    vmin = np.min(data)
-    vmax = np.max(data)
+
+def rescale(data, vmin=None, vmax=None, do_clip=False):
+    vmin = np.min(data) if vmin is None else vmin
+    vmax = np.max(data) if vmax is None else vmax
 
     if vmax == vmin:
-        return data*0
+        out =  data*0
     else:
-        return (data-vmin)/(vmax-vmin)
+        out =  (data-vmin)/(vmax-vmin)
+    if do_clip:
+        out= np.clip(out, 0, 1)
+    return out
 
+def percentile_rescale(data, plow=0.5, phigh=99.5, do_clip = False):
+    vmin, vmax = np.percentile(data, (plow, phigh))
+    return rescale(data, vmin=vmin,vmax=vmax, do_clip=do_clip)
+
+    
 def clip_outliers(m, plow=0.5, phigh=99.5):
     px = np.percentile(m, (plow, phigh))
     return np.clip(m, *px)
+
+
+
+def fuzzy_match(key, strings):
+    matches = [fuzz.partial_ratio(key, other) for other in strings ]
+    best_match = np.argmax(matches)
+    return strings[best_match]
+
+
+
+def pixelwise_smoothed_apply(frames, fn, pre_smooth=5, verbose=True, output=None, tqdm_msg='', plow=25):
+    frames_flat = frames.reshape(len(frames),-1).T
+
+    if output is None:
+        out = np.zeros(frames_flat.shape)
+    else:
+        out = output.reshape(len(frames),-1).T
+
+    if pre_smooth > 0:
+        frames_flat = ndi.percentile_filter(frames_flat, percentile=plow, size=(1, pre_smooth))
+        frames_flat = ndi.gaussian_filter1d(frames_flat, pre_smooth, output=frames_flat,
+                                            axis=1)
+
+    for i in tqdm(range(len(out)), disable=not verbose,desc=tqdm_msg):
+        out[i] = fn(frames_flat[i])
+
+    return out.T.reshape(frames.shape)
 
 
 @jit(nopython=True)
@@ -86,6 +125,14 @@ def cut_largest(v, iters=1):
         jn2 = k + 1 if k < len(v)-1 else k - 2
         v[k] = 0.5*(v[jn1] + v[jn2])
     return v
+
+
+def find_up_threshold_crossings(y, th=0, nup=2):
+    objs = ndi.find_objects(ndi.label(y > th)[0])
+    return np.array([o[0].start for o in objs if o[0].stop-o[0].start >= nup])
+
+def find_up_zero_crossings(y, nup=2):
+    return find_up_threshold_crossings(y, th=0, nup=nup)
 
 
 def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
@@ -808,3 +855,26 @@ def ndbin_volume(frames, bins=None, trim_margins=True):
         #else:
         #frames = frames.astype(_dtype_)
     return frames
+
+import dill
+import gzip as gz
+def load_from_transforms(path, entries=None, verbose=False):
+    from . import Anscombe
+    tfp_list = dill.load(gz.open(path, 'rb'))
+    denoised_list = []
+    if entries is not None:
+        tfp_list = [tfp_list[en] for en in entries]
+    for tfp in tfp_list:
+        denoiser = tfp['denoiser']
+        if verbose:
+            channel = tfp.get('channel', 'unknown')
+            print(f"Loading color channel: {channel} ")
+            denoiser.verbose = verbose
+        tf_inv = denoiser.ms_inverse_transform if tfp['is_multiscale'] else denoiser.inverse_transform
+        frames = tf_inv(tfp['transform_patches'])
+        if tfp['is_anscombe']:
+            if verbose:
+                print('doing inverse Anscombe transform')
+            frames = Anscombe.inverse_transform(frames)
+        denoised_list.append(frames)
+    return denoised_list

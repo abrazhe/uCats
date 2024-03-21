@@ -7,6 +7,8 @@ import itertools as itt
 
 from imfun import bwmorph, cluster
 
+from tqdm.auto import tqdm
+
 
 @jit(nopython=True)
 def percentile_th_frames(frames, plow=5):
@@ -58,12 +60,20 @@ def get_object_sizes(mask, is_labels=False):
     out = [np.sum(labels[o]==k+1) for k,o in enumerate(objs)]
     return out
 
-def n_largest_regions(mask,  n=1):
+# def n_largest_regions(mask,  n=1):
+#     "get  N largest contiguous region from a binary mask"
+#     labels, _ = ndi.label(mask)
+#     sizes = get_object_sizes(labels, is_labels=True)
+#     ksort = np.argsort(sizes)[::-1]
+#     return np.sum([labels == k+1 for k in ksort[:n]],0).astype(bool)
+
+def n_largest_regions(mask,  n=1, min_ratio=0.0):
     "get  N largest contiguous region from a binary mask"
     labels, _ = ndi.label(mask)
     sizes = get_object_sizes(labels, is_labels=True)
     ksort = np.argsort(sizes)[::-1]
-    return np.sum([labels == k+1 for k in ksort[:n]],0).astype(bool)
+    largest_size = np.max(sizes)
+    return np.sum([labels == k+1 for k in ksort[:n] if sizes[k]/largest_size >= min_ratio],0).astype(bool)
 
 largest_region = n_largest_regions
 
@@ -112,6 +122,22 @@ def mask2points(mask):
     "mask to a list of points, as row,col"
     return np.array([loc for loc in locations(mask.shape) if mask[loc]])
 
+def img2points(img, mask=None):
+    if mask is None:
+        mask = img
+    sh = img.shape
+    locs = ((i,j) for i in range(sh[0]) for j in range(sh[1]))
+    points = [l[::-1] + (img[l],) for l in locs if mask[l]]
+    return np.array(points)
+
+
+def center_of_mass(img, alpha=1):
+    pts = img2points(img)
+    norm = (pts[:,-1]**alpha).sum()
+    weights = pts[:,-1]**alpha/norm
+    return (pts[:,:-1]*weights[:,None]).sum(0)
+
+
 def cleanup_mask(m, eps=3, min_pts=5):
     if not np.any(m):
         return np.zeros_like(m)
@@ -140,6 +166,12 @@ def correct_small_loads(points, affs, min_loads=5, niter=1):
 
         affs = new_affs.copy()
     return new_affs
+
+def framewise_refine_masks(masks,min_size=16):
+    return np.array([refine_mask_by_percentile_filter(m, with_cleanup=True, min_obj_size=min_size)
+                     for m in tqdm(masks, desc='p-update mask')])
+
+
 
 def cleanup_cluster_map(m, min_neighbors=1, niter=1):
     Nr, Nc = m.shape

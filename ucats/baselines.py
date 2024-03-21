@@ -45,6 +45,7 @@ from .utils import mad_std, make_odd
 from .utils import process_signals_parallel
 from .utils import iterated_tv_chambolle
 from .utils import find_jumps
+from .utils import pixelwise_smoothed_apply
 
 
 def store_baseline_pickle(name, frames, ncomp=50):
@@ -87,6 +88,239 @@ def tight_running_envelope(v):
     out[:,1] = np.minimum(forward[:,1],backward[:,1])
     return out
     #return np.maximum(running_min(v), running_min(v[::-1])[::-1])
+
+def local_extr1(v, kind='max'):
+    "simple local extrema, todo: move to utils"
+    
+    dy = np.diff(v)
+    dy_sign = np.sign(dy)
+    operator = np.greater if kind == 'min' else np.less
+    cond1 = (operator(dy_sign[1:],dy_sign[:-1]) )
+    return np.where(cond1)[0] + 1
+
+def robust_line(y, x=None, ns=None, th=3, niter=3):
+    """
+    A simple iterative take on robust linear regression
+    """
+    if ns is None:
+        ns = np.std(np.diff(y))/2**0.5
+    if x is None:
+        x = np.arange(len(y))
+    weights = np.ones(len(y))
+    A = np.vstack([x, np.ones(len(x))]).T
+    for i in range(niter):
+        #p = np.polyfit(x,v,1,w=weights)
+        #fit = np.polyval(p, x)
+        k,b = np.linalg.lstsq(A*weights[:,None], y, rcond=None)[0]
+        fit = k*x + b
+        weights = np.where(np.abs(fit-y) > th*ns, 0, 1)
+    return k,b
+
+
+def correct_bias(v, baseline):
+    resid = v - baseline
+    bias = find_bias(resid)
+    return baseline+bias
+
+
+def lower_envelope(v, use_shoulders=True, x = None):
+    """
+    Make linear interpolation going via local minima points
+    Optionally use "shoulders" along with minima.
+    """
+    if x is None:
+        x = np.arange(len(v))
+    lmmin = local_extr1(v,'min')
+    if use_shoulders:
+        d2 = np.diff(v, 2)
+        shoulders = local_extr1(d2, 'max') + 1
+        lmmin = np.concatenate([[0], lmmin, shoulders, [len(v)-1]])
+        lmmin = np.sort(lmmin)
+    else:
+        lmmin = np.concatenate([[0], lmmin, [len(v)-1]])
+    #print(len(lmmin))
+    v = np.interp(x, lmmin, v[lmmin])
+    return v, lmmin
+
+def baseline_smoothed_minima(y, pre_smooth=10, post_smooth=25, niters=1, use_shoulders=True):
+    """
+    Estimate baseline as smoothed linear interpolation, going through local minima
+    """
+    x = np.arange(len(y))
+    for i in range(niters):
+        if pre_smooth > 0 :
+            ys = ndi.median_filter(y, pre_smooth)
+            yss = ndi.gaussian_filter1d(ys,pre_smooth)
+        else:
+            yss = y
+
+        bdown = lower_envelope(yss, use_shoulders=use_shoulders,x=x)[0]
+
+        if post_smooth > 0:
+            y = l1spline(bdown, post_smooth)
+        else:
+            y = bdown
+    return y
+
+def baseline_iterated_smoothed_minima(y, pre_smooth=11, post_smooth=11, niters=2,
+                                      use_shoulders=False, plow=50, noise_sigma=None,
+                                      sigma_range=1.5, wsize=300):
+    """
+    Estimate baseline as smoothed linear interpolation going through local minima
+    Iteratively substitutes values in the signal by current baseline estimate if they 
+    fall outside a sigma_range x noise_sigma range
+    """
+    x = np.arange(len(y))
+
+    if pre_smooth > 0 :
+        ys = ndi.percentile_filter(y, percentile=plow, size=pre_smooth, )
+        yss = ndi.gaussian_filter1d(ys,pre_smooth/2)
+        if noise_sigma is None:
+            noise_sigma = mad_std(y-yss)
+    else:
+        yss = y
+
+    low2 = windowed_runmin(yss, wsize=wsize)
+    if noise_sigma is None:
+        noise_sigma = mad_std(y-low2)
+    yss[-1] = np.mean(low2[-len(y)//2:])
+    yss[0] = np.mean(low2[:len(y)//2])
+
+    for i in range(niters):
+
+        bdown, tpoints = lower_envelope(yss, use_shoulders=use_shoulders,x=x)
+
+        uth = bdown + sigma_range*noise_sigma
+        lth = bdown - sigma_range*noise_sigma
+
+        yss = np.where((y < lth)|(y > uth), bdown, y)
+        yss = ndi.gaussian_filter1d(yss, max(1.5, pre_smooth/2))
+        baseline = bdown
+
+    if post_smooth > 0:
+        baseline = l1spline(baseline, post_smooth)
+
+    return baseline
+
+def baseline_smoothed_filtered_minima(y, pre_smooth=5, post_smooth=25, plow=50, wsize=300,
+                                      noise_sigma=None, sigma_range=1.5,
+                                      smoother=l2spline,
+                                      do_padding=False,
+                                      do_lower_endpoints=True,
+                                      do_remove_linear_trend=True):
+    """
+    Estimate baseline as smoothed linear interpolation going through local minima of the signal.
+    Optionally, fit and remove general linear trend before estimation. 
+    Only use local minima that are within a sigma_range times noise standard deviation from some 
+    draft baseline estimate (top_hat of low-hat of y)
+    """
+    x = np.arange(len(y))
+
+    if noise_sigma is None:
+        noise_sigma = np.std(np.diff(y))/np.sqrt(2)
+
+
+    if pre_smooth > 0 :
+        ys = ndi.percentile_filter(y, percentile=plow, size=pre_smooth, )
+        yss = ndi.gaussian_filter1d(ys,pre_smooth/2)
+    else:
+        yss = y
+
+    if do_remove_linear_trend:
+        px = robust_line(y, x=x, ns=noise_sigma, niter=5,)
+        trend = px[0]*x + px[1]
+    else:
+        trend = np.zeros_like(yss)
+
+    yss = yss - trend
+
+    L = len(y)
+    #yss[0], yss[-1] = 0,0
+    if do_lower_endpoints:
+        # this is questionable though:
+        yss[0] = min(yss[0], np.percentile(yss[:L//2],25))
+        yss[-1] = min(yss[-1], np.percentile(yss[L//2:],25))
+
+    npad = wsize//2
+    if do_padding:
+        yss_p =  pybaselines.utils.pad_edges(yss, npad,)
+    else:
+        yss_p = yss
+
+    low1 = windowed_runmin(yss_p, wsize=wsize)
+    low1 = -windowed_runmin(-low1, wsize=wsize//2)
+
+    if do_padding:
+        low1 = low1[npad:-npad]
+
+
+    minima = local_extr1(yss, 'min')
+    minima = minima[np.abs(yss[minima]-low1[minima]) <= sigma_range*noise_sigma]
+    minima = np.concatenate([[0], minima, [len(yss)-1]])
+    baseline = np.interp(x, minima, yss[minima])
+
+
+    if post_smooth > 0:
+        baseline = smoother(baseline, post_smooth)
+
+    return baseline + trend
+
+import os
+def stack_baseline(frames, name,
+                   pre_smooth = 5, post_smooth=25,
+                   need_rebuild=False,
+                   wsize=300,
+                   smoother=l2spline,
+                   ncomp_out=32,
+                   fn1 = partial(baseline_smoothed_filtered_minima, post_smooth=0),
+                   suff='',
+                   **kwargs):
+
+    #baseline_name = os.path.splitext(name)[0] + '-baselines-new-pcf.p'
+    base, ext = os.path.splitext(name)
+    # older code uses this
+    if ext in ['.tif', '.lsm']:
+        name = base
+
+    baseline_name = name + suff + '-baselines-new-pcf.p'
+    pcf = None
+
+    fn1 = partial(fn1, **kwargs)
+
+    if not os.path.exists(baseline_name) or need_rebuild:
+        x = np.arange(len(frames))
+        #fn1 = lambda v: lower_envelope(v, use_shoulders=False, x=x)[0]
+        #fn2 = lambda v: lower_envelope(v, use_shoulders=True, x=x)[0]
+        #fn1 = lambda v: baseline_smoothed_envelope(v, pre_smooth=0, post_smooth=0, niters=niters)
+        #fn1 = lambda v: baseline_smoothed_minima2(v, pre_smooth=pre_smooth, post_smooth=0, niters=niters)
+        #-fn1 = lambda v: baseline_smoothed_minima3(v, pre_smooth=pre_smooth, post_smooth=0, wsize=wsize, **kwargs)
+        
+        stage1 = pixelwise_smoothed_apply(frames, fn1, pre_smooth=0, tqdm_msg='stage1')
+        #F0 = pixelwise_smoothed_apply(stage1, lambda v: ubase.l1spline(v, post_smooth), pre_smooth=0, output=stage1, tqdm_msg='post-smooth')
+        F0 = pixelwise_smoothed_apply(stage1, lambda v: smoother(v, post_smooth), pre_smooth=0, output=stage1, tqdm_msg='post-smooth')
+        #stage2 = stage1
+        #for i in tqdm(range(stage2_iters), desc='stage2'):
+        #    stage2 = pixelwise_smoothed_apply(stage2, fn2, pre_smooths[1], output = stage2, tqdm_msg='stage2/%02d'%i)
+
+
+        # F0 = pixelwise_smoothed_apply(stage2, lambda v:ubase.l1spline(v, post_smooth), pre_smooth=0, output=stage2,
+        #                               tqdm_msg='post-smooth')
+
+        residuals = frames-F0
+        ns = np.std(np.diff(residuals,axis=0),axis=0)/np.sqrt(2)
+
+        bias = find_bias_frames(residuals,3, ns=ns)
+        F0 = F0 + 0.5*bias
+
+        pcf = PCA_frames(F0,npc=ncomp_out)
+        pickle.dump(pcf, open(baseline_name,'wb'))
+    else:
+        pcf = pickle.load(open(baseline_name,'rb'))
+
+    F0a = pcf.inverse_transform(pcf.coords)
+    F0a = np.maximum(F0a,0)
+    return F0a
+
 
 
 def top_running_min(v):
