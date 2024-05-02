@@ -137,9 +137,11 @@ def find_up_zero_crossings(y, nup=2):
 
 def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
                   min_height_factor=0.5,
-                  kind='first', with_plot=False):
+                  kind='first',
+                  with_props=False,
+                  with_plot=False):
     """alternative mode estimator
-     - kind: {'first' | 'highest'}
+     - kind: {'first' | 'highest' | 'max_area'}
     """
 
     vmin,vmax = np.percentile(data, (1,top_cut))
@@ -147,13 +149,18 @@ def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
     bins_smooth = l2spline(counts, smooth_factor)
     #mode  = edges[np.argmax(bins_smooth)]
 
-    peak_locs, peak_props =signal.find_peaks(bins_smooth,
+    peak_locs, peak_props = signal.find_peaks(bins_smooth,
                                              height=min_height_factor*np.max(bins_smooth))
+
+    widths, half_heights, lefts, rights = signal.peak_widths(bins_smooth, peak_locs)
 
     if kind == 'first':
         kpeak = peak_locs[0]
     elif kind == 'highest':
         kpeak = peak_locs[np.argmax(peak_props['peak_hights'])]
+    elif kind == 'max_area':
+        areas = [amp*width for amp,width in zip(peak_props['peak_heights'], widths)]
+        kpeak = np.argmax(areas)
     else:
         kpeak = np.argmax(bins_smooth)
 
@@ -164,6 +171,13 @@ def estimate_mode(data, bins=100, smooth_factor=3, top_cut=95,
         ax.plot(edges[:-1],counts, color='gray')
         ax.plot(edges[:-1], bins_smooth, lw=3)
         ax.axvline(mode, color='tomato')
+
+        if kind == 'max_area':
+            right_hw = edges[int(round(rights[kp]))]
+            left_hw = edges[int(round(lefts[kp]))]
+            ax.axvspan(left_hw, right_hw, color='y', alpha=0.33, zorder=-1)
+            
+        
     return mode
 
 
@@ -627,7 +641,7 @@ def group_locs_between_separators(locs, separators):
             in zip(separators[:-1], separators[1:])]
 
 def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=10,
-                   peak_separators=None,  wlen=None, with_plot=False, ax=None):
+                   peak_separators=None,  wlen=None, with_plot=False, ax=None,verbose=False):
 
     ys = ndi.gaussian_filter1d(y, smooth) if smooth > 0 else y
     # peaks of derivatives
@@ -661,7 +675,8 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
                 sub_peaks = sorted(pg, reverse=True, key=lambda p: ys[p])[:1]
 
                 if not len(sub_peaks):
-                    print('Peak group empty:', peak_separators, peak_separators[0]*dt)
+                    if verbose:
+                        print('Peak group empty:', peak_separators, peak_separators[0]*dt)
                     continue
 
                 gpeak = sub_peaks[0]
@@ -714,15 +729,17 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             prom = proms[i]
             hw = hwidths[i]
             lw = lwidths[i]
+            speak = selected_peaks[i]
             dpeak = selected_dpeaks[i]
             row = dict(prominence = prom[0],
                        left_base=prom[1],
                        right_base=prom[2],
-                       peak_amp = ys[selected_peaks[i]], #!
+                       peak_amp = ys[speak], #!
                        fwhm = hw[0]*dt,
+                       dpeak_amp = d_ys[dpeak],
                        gonset=dpeak*dt,
                        ronset = lw[2]*dt,
-                       time_to_peak = selected_peaks[i]*dt, #!
+                       time_to_peak = speak*dt, #!
                        time_to_half = hw[2]*dt,
                        time_to_half_right = hw[3]*dt,
                        finish = lw[3]*dt,
@@ -732,6 +749,7 @@ def describe_peaks(y, dt=1., smooth=1.5, rel_onset=0.15, npeaks=1, min_distance=
             row = dict(prominence = np.nan,
                        peak_amp = np.nan,
                        fwhm = np.nan,
+                       dpeak_amp=np.nan,
                        gonset=np.nan,
                        ronset = np.nan,
                        time_to_peak = np.nan,
