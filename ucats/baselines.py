@@ -91,7 +91,7 @@ def tight_running_envelope(v):
 
 def local_extr1(v, kind='max'):
     "simple local extrema, todo: move to utils"
-    
+
     dy = np.diff(v)
     dy_sign = np.sign(dy)
     operator = np.greater if kind == 'min' else np.less
@@ -167,7 +167,7 @@ def baseline_iterated_smoothed_minima(y, pre_smooth=11, post_smooth=11, niters=2
                                       sigma_range=1.5, wsize=300):
     """
     Estimate baseline as smoothed linear interpolation going through local minima
-    Iteratively substitutes values in the signal by current baseline estimate if they 
+    Iteratively substitutes values in the signal by current baseline estimate if they
     fall outside a sigma_range x noise_sigma range
     """
     x = np.arange(len(y))
@@ -210,8 +210,8 @@ def baseline_smoothed_filtered_minima(y, pre_smooth=5, post_smooth=25, plow=50, 
                                       do_remove_linear_trend=True):
     """
     Estimate baseline as smoothed linear interpolation going through local minima of the signal.
-    Optionally, fit and remove general linear trend before estimation. 
-    Only use local minima that are within a sigma_range times noise standard deviation from some 
+    Optionally, fit and remove general linear trend before estimation.
+    Only use local minima that are within a sigma_range times noise standard deviation from some
     draft baseline estimate (top_hat of low-hat of y)
     """
     x = np.arange(len(y))
@@ -238,9 +238,14 @@ def baseline_smoothed_filtered_minima(y, pre_smooth=5, post_smooth=25, plow=50, 
     #yss[0], yss[-1] = 0,0
     if do_lower_endpoints:
         # this is questionable though:
-        yss[0] = min(yss[0], np.percentile(yss[:L//2],25))
-        yss[-1] = min(yss[-1], np.percentile(yss[L//2:],25))
-
+        if isinstance(do_lower_endpoints, str):
+            if do_lower_endpoints == 'left':
+                yss[0] = min(yss[0], np.percentile(yss[:2*wsize],25))
+            elif do_lower_endpoints == 'right':
+                yss[-1] = min(yss[-1], np.percentile(yss[-2*wsize:],25))
+        else:
+            yss[0] = min(yss[0], np.percentile(yss[:2*wsize],25))
+            yss[-1] = min(yss[-1], np.percentile(yss[-2*wsize:],25))
     npad = wsize//2
     if do_padding:
         yss_p =  pybaselines.utils.pad_edges(yss, npad,)
@@ -294,7 +299,7 @@ def stack_baseline(frames, name,
         #fn1 = lambda v: baseline_smoothed_envelope(v, pre_smooth=0, post_smooth=0, niters=niters)
         #fn1 = lambda v: baseline_smoothed_minima2(v, pre_smooth=pre_smooth, post_smooth=0, niters=niters)
         #-fn1 = lambda v: baseline_smoothed_minima3(v, pre_smooth=pre_smooth, post_smooth=0, wsize=wsize, **kwargs)
-        
+
         stage1 = pixelwise_smoothed_apply(frames, fn1, pre_smooth=0, tqdm_msg='stage1')
         #F0 = pixelwise_smoothed_apply(stage1, lambda v: ubase.l1spline(v, post_smooth), pre_smooth=0, output=stage1, tqdm_msg='post-smooth')
         F0 = pixelwise_smoothed_apply(stage1, lambda v: smoother(v, post_smooth), pre_smooth=0, output=stage1, tqdm_msg='post-smooth')

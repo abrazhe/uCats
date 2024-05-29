@@ -139,9 +139,9 @@ class EventCollection:
 
 
 
-SegmentStates = namedtuple('SegmentStates', "inits stops carryover avg_new_size ages growth_rate")
+SegmentStates = namedtuple('SegmentStates', "inits stops carryover avg_new_size ages classes growth_rate")
 
-def split_segment_states(binary, with_ages=True, min_overlap_size=16):
+def split_segment_states(binary, with_ages=True, with_classes=False, min_overlap_size=16):
 
     L = len(binary)
     acc_inits = np.zeros(L, np.uint16)
@@ -157,6 +157,11 @@ def split_segment_states(binary, with_ages=True, min_overlap_size=16):
     else:
         ages = None
 
+    if with_classes:
+        classes = np.zeros(binary.shape, dtype=np.uint8)
+    else:
+        classes = None
+
     for k, m in enumerate(tqdm(binary)):
         if k == 0:
             m_prev = np.zeros(m.shape, bool)
@@ -165,8 +170,9 @@ def split_segment_states(binary, with_ages=True, min_overlap_size=16):
 
 
         labels, ntotal = ndi.label(m)
+        labels_prev, _ = ndi.label(m_prev)
         objs = ndi.find_objects(labels)
-        objs_prev = ndi.find_objects(ndi.label(m_prev)[0])
+        objs_prev = ndi.find_objects(labels_prev)
 
         init_count = 0
         remain_count = 0
@@ -181,16 +187,22 @@ def split_segment_states(binary, with_ages=True, min_overlap_size=16):
             # exists now, didn't exist before
             overlap = m_prev[o] & sub_mask
             #print(np.sum(overlap))
-            if np.sum(overlap) < min_overlap_size/4:
+
+            if np.sum(overlap) < min_overlap_size/4: # new segment
                 init_count += 1
                 sum_new_size += np.sum(sub_mask)
                 if with_ages:
                     ages[k][o][sub_mask] = 1
-            else:
+                if with_classes:
+                    classes[k][o][sub_mask] = 1
+            else:                                    # continuing segment
                 remain_count += 1
+                #!!! NB this is not growth, btw
                 growth_rate += np.sum(sub_mask) - np.sum(overlap)
                 if with_ages:
                     ages[k][o][sub_mask] = np.max(ages[k-1][o][overlap])+1
+                if with_classes:
+                    classes[k][o][sub_mask] = 2
 
         acc_inits[k] = init_count
 
@@ -201,10 +213,13 @@ def split_segment_states(binary, with_ages=True, min_overlap_size=16):
             acc_expansion_rates[k] = growth_rate/remain_count
 
         stop_count = 0
-        for o in objs_prev:
+        for j,o in enumerate(objs_prev,start=1):
             # existed before, doesn't exist now
+            sub_mask = labels_prev[o] == j
             if np.sum(m_prev[o] & m[o]) < min_overlap_size/4:
                 stop_count += 1
+                if with_classes:
+                    classes[k][o][sub_mask] = 3 # fixme: k or k-1 ?
         #
         if k > 0:
             acc_stops[k-1] = stop_count
@@ -212,4 +227,4 @@ def split_segment_states(binary, with_ages=True, min_overlap_size=16):
     acc_carryover = acc_total - acc_inits - acc_stops
 
     #return acc_inits, acc_stops,acc_carryover, acc_avg_new_size, ages, acc_expansion_rates
-    return SegmentStates(acc_inits, acc_stops, acc_carryover, acc_avg_new_size, ages, acc_expansion_rates)
+    return SegmentStates(acc_inits, acc_stops, acc_carryover, acc_avg_new_size, ages, classes, acc_expansion_rates)
