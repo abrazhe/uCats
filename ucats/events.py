@@ -146,8 +146,7 @@ def split_segment_states(binary, with_ages=True, with_classes=False, min_overlap
     L = len(binary)
     acc_inits = np.zeros(L, np.uint16)
     acc_stops = np.zeros(L,np.uint16)
-    acc_carryover = np.zeros(L,np.uint16)
-    acc_total = np.zeros(L, np.uint16)
+    acc_total = np.zeros(L, int)
 
     acc_avg_new_size = np.zeros(L,int)
     acc_expansion_rates = np.zeros(L) # todo!
@@ -218,13 +217,21 @@ def split_segment_states(binary, with_ages=True, with_classes=False, min_overlap
             sub_mask = labels_prev[o] == j
             if np.sum(m_prev[o] & m[o]) < min_overlap_size/4:
                 stop_count += 1
-                if with_classes:
-                    classes[k][o][sub_mask] = 3 # fixme: k or k-1 ?
+                if with_classes and (k>0):
+                    classes[k-1][o][sub_mask] = 3 # fixme: k or k-1 ?
         #
         if k > 0:
             acc_stops[k-1] = stop_count
+        #acc_carryover[k] = max(0, ntotal - init_count - stop_count)
 
-    acc_carryover = acc_total - acc_inits - acc_stops
+    acc_carryover = (np.maximum(0, acc_total - acc_inits - acc_stops)
+                       .astype(np.uint16))
 
     #return acc_inits, acc_stops,acc_carryover, acc_avg_new_size, ages, acc_expansion_rates
-    return SegmentStates(acc_inits, acc_stops, acc_carryover, acc_avg_new_size, ages, classes, acc_expansion_rates)
+    return SegmentStates(acc_inits,
+                         acc_stops,
+                         acc_carryover,
+                         acc_avg_new_size,
+                         ages,
+                         classes,
+                         acc_expansion_rates)
