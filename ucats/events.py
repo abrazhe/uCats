@@ -123,8 +123,8 @@ class EventCollection:
         out[frame_crop] = mask
         return out
 
-    def to_csv(self, name):
-        df = self.to_DataFrame()
+    def to_csv(self, name, *args,**kwargs):
+        df = self.to_DataFrame(*args,**kwargs)
         df.to_csv(name)
 
     def to_filtered_array(self):
@@ -134,7 +134,7 @@ class EventCollection:
             k = d['idx']
             o = self.objs[k]
             cond = self.labels[o] == k + 1
-            out[o][cond] = k
+            out[o][cond] = k+1
         return out
 
 
